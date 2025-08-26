@@ -10,6 +10,7 @@
 require('dotenv').config();
 
 const mongoose = require('mongoose');
+const axios = require('axios');
 const config = require('../config/config');
 const { TeleporterMessage } = require('../models/teleporterMessage');
 const teleporterService = require('../services/teleporterService');
@@ -58,6 +59,12 @@ async function connectDatabase() {
     logger.info(`Connecting to database at ${connectionUri}`);
     await mongoose.connect(connectionUri, config.db.options);
     logger.info('Database connection established');
+    
+    // Log detailed connection info
+    logger.info(`🗄️  Connected to database: ${mongoose.connection.db.databaseName}`);
+    logger.info(`🌐 Connection host: ${mongoose.connection.host}:${mongoose.connection.port}`);
+    logger.info(`📝 Connection ready state: ${mongoose.connection.readyState}`);
+    
     return true;
   } catch (error) {
     logger.error('Failed to connect to database:', { error: error.message });
@@ -76,16 +83,20 @@ async function findMissingDates(days) {
     dataType: 'daily'
   }).sort({ updatedAt: -1 });
   
+  logger.info(`📊 Found ${existingData.length} existing daily records in database`);
+  
   // Create a map of existing dates (YYYY-MM-DD)
   const existingDates = {};
   existingData.forEach(record => {
     const date = new Date(record.updatedAt);
     const dateStr = `${date.getFullYear()}-${(date.getMonth()+1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`;
     existingDates[dateStr] = true;
+    logger.info(`📅 Existing date found: ${dateStr} (${record.totalMessages} messages, ${record.messageCounts?.length || 0} chain pairs)`);
   });
   
   // Find the most recent date
   const mostRecentDate = existingData.length > 0 ? new Date(existingData[0].updatedAt) : new Date();
+  logger.info(`🕒 Most recent date in DB: ${mostRecentDate.toISOString()}`);
   
   // Check for missing dates in the specified range
   const missingDates = [];
@@ -97,10 +108,13 @@ async function findMissingDates(days) {
     
     // If this date doesn't exist in our database, add it to the missing dates
     if (!existingDates[dateStr]) {
+      logger.info(`❌ Missing date detected: ${dateStr}`);
       missingDates.push({
         date: new Date(currentDate),
         dateString: dateStr
       });
+    } else {
+      logger.info(`✅ Date exists: ${dateStr}`);
     }
   }
   
@@ -114,27 +128,113 @@ async function findMissingDates(days) {
  */
 async function backfillDateData(date) {
   try {
-    // Calculate time range for the day (in hours ago from now)
-    const now = new Date();
-    const diffMs = now - date;
-    const diffHours = Math.round(diffMs / (1000 * 60 * 60));
+    // Create the start and end of the target day (24-hour window)
+    const dayStart = new Date(date);
+    dayStart.setHours(0, 0, 0, 0); // Start of day (00:00:00)
     
-    // We need to fetch a 24-hour window
-    const startHoursAgo = diffHours + 24; // Start 24 hours before the end of the target day
-    const endHoursAgo = diffHours;        // End at the end of the target day
+    const dayEnd = new Date(date);
+    dayEnd.setHours(23, 59, 59, 999); // End of day (23:59:59)
     
-    logger.info(`Fetching data for ${date.toISOString().split('T')[0]} (${endHoursAgo}-${startHoursAgo} hours ago)`);
+    // Convert to Unix timestamps (seconds)
+    const startTime = Math.floor(dayStart.getTime() / 1000);
+    const endTime = Math.floor(dayEnd.getTime() / 1000);
     
-    // Fetch messages for this time range
-    const result = await teleporterService.fetchTeleporterMessagesWithTimeRange(startHoursAgo, endHoursAgo);
+    logger.info(`Backfilling data for ${date.toISOString().split('T')[0]} (${dayStart.toISOString()} to ${dayEnd.toISOString()})`);
     
-    if (result.messages.length === 0) {
+    // Start fetching from recent messages and go backwards until we find messages from this day
+    let allDayMessages = [];
+    let nextPageToken = null;
+    let pageCount = 0;
+    let reachedTargetDay = false;
+    let passedTargetDay = false;
+    
+    const headers = {
+      'Accept': 'application/json',
+      'User-Agent': 'l1beat-backend'
+    };
+    
+    if (process.env.GLACIER_API_KEY) {
+      headers['x-glacier-api-key'] = process.env.GLACIER_API_KEY;
+    }
+    
+    do {
+      pageCount++;
+      
+      const params = {
+        network: 'mainnet',
+        pageSize: 100
+      };
+      
+      if (nextPageToken) {
+        params.pageToken = nextPageToken;
+      }
+      
+      logger.info(`Fetching page ${pageCount} for ${date.toISOString().split('T')[0]}`);
+      
+      const response = await axios.get(`${process.env.GLACIER_API_BASE}/icm/messages`, {
+        headers,
+        params,
+        timeout: 30000
+      });
+      
+      const data = response.data;
+      const messages = data.messages || [];
+      nextPageToken = data.nextPageToken;
+      
+      // Filter messages for our target day
+      for (const message of messages) {
+        let messageTimestamp = null;
+        
+        // Try to get timestamp from sourceTransaction first, then fallback to message timestamp
+        if (message.sourceTransaction && message.sourceTransaction.timestamp) {
+          messageTimestamp = message.sourceTransaction.timestamp;
+        } else if (message.timestamp) {
+          messageTimestamp = message.timestamp;
+        }
+        
+        if (!messageTimestamp) {
+          continue; // Skip messages without timestamps
+        }
+        
+        // Convert timestamp to seconds if it's in milliseconds
+        const timestampInSeconds = messageTimestamp > 1000000000000 
+          ? Math.floor(messageTimestamp / 1000) 
+          : messageTimestamp;
+        
+        // Check if this message is from our target day
+        if (timestampInSeconds >= startTime && timestampInSeconds <= endTime) {
+          allDayMessages.push(message);
+          reachedTargetDay = true;
+        } else if (timestampInSeconds < startTime) {
+          // We've passed our target day (gone too far back), stop
+          passedTargetDay = true;
+          break;
+        }
+      }
+      
+      logger.info(`Page ${pageCount}: ${messages.length} messages, ${allDayMessages.length} from target day`);
+      
+      // Stop if we've passed the target day or hit limits
+      if (passedTargetDay || pageCount >= 1000) {
+        break;
+      }
+      
+      // Add delay between requests
+      if (nextPageToken) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+    } while (nextPageToken);
+    
+    if (allDayMessages.length === 0) {
       logger.warn(`No messages found for ${date.toISOString().split('T')[0]}`);
       return false;
     }
     
+    logger.info(`Found ${allDayMessages.length} messages for ${date.toISOString().split('T')[0]}`);
+    
     // Process the messages
-    const processedData = await teleporterService.processMessages(result.messages);
+    const processedData = await teleporterService.processMessages(allDayMessages);
     
     // Create a timestamp at the end of the target day
     const timestamp = new Date(date);
@@ -144,17 +244,29 @@ async function backfillDateData(date) {
     const teleporterData = new TeleporterMessage({
       updatedAt: timestamp,
       messageCounts: processedData,
-      totalMessages: result.messages.length,
+      totalMessages: allDayMessages.length,
       timeWindow: 24,
       dataType: 'daily'
     });
     
+    logger.info(`💾 About to save to database: ${mongoose.connection.db.databaseName} collection: ${TeleporterMessage.collection.name}`);
+    logger.info(`📊 Saving data for ${date.toISOString().split('T')[0]}:`, {
+      timestamp: timestamp.toISOString(),
+      totalMessages: allDayMessages.length,
+      chainPairs: processedData.length,
+      dataType: 'daily',
+      timeWindow: 24,
+      sampleChainPair: processedData[0] || null
+    });
+    
     await teleporterData.save();
     
-    logger.info(`Saved teleporter data for ${date.toISOString().split('T')[0]} with ${processedData.length} chain pairs and ${result.messages.length} total messages`);
+    logger.info(`✅ Successfully saved to MongoDB! Document ID: ${teleporterData._id}`);
+    logger.info(`✅ Saved teleporter data for ${date.toISOString().split('T')[0]} with ${processedData.length} chain pairs and ${allDayMessages.length} total messages`);
     return true;
+    
   } catch (error) {
-    logger.error(`Error backfilling data for ${date.toISOString().split('T')[0]}:`, { 
+    logger.error(`❌ Error backfilling data for ${date.toISOString().split('T')[0]}:`, { 
       error: error.message,
       stack: error.stack
     });

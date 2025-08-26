@@ -1,5 +1,4 @@
 const chainService = require('../services/chainService');
-const tvlService = require('../services/tvlService');
 const chainDataService = require('../services/chainDataService');
 const Chain = require('../models/chain');
 const tpsService = require('../services/tpsService');
@@ -51,9 +50,6 @@ const fetchAndUpdateData = async () => {
                 console.error(`Failed to update TPS data for chain ${chain.chainId}:`, error);
             }
         }
-
-        // Update TVL data independently
-        await tvlService.updateTvlData();
         
         console.log(`[${process.env.NODE_ENV}] Data update completed successfully`);
         

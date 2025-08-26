@@ -1,4 +1,5 @@
 const TPS = require('../models/tps');
+const CumulativeTxCount = require('../models/cumulativeTxCount');
 const axios = require('axios');
 const Chain = require('../models/chain');
 const config = require('../config/config');
@@ -430,6 +431,235 @@ class TpsService {
     } catch (error) {
       logger.error(`Error fetching network TPS history: ${error.message}`);
       throw new Error(`Error fetching network TPS history: ${error.message}`);
+    }
+  }
+
+  /**
+   * Updates cumulative transaction count data for a specific chain
+   * @param {string} chainId - The chain ID
+   * @param {number} retryCount - Number of retry attempts
+   * @param {number} initialBackoffMs - Initial backoff time in milliseconds
+   * @returns {Promise<Object|null>} - The result of the update operation or null on failure
+   */
+  async updateCumulativeTxCount(chainId, retryCount = config.api.metrics.rateLimit.maxRetries || 3, initialBackoffMs = config.api.metrics.rateLimit.retryDelay || 2000) {
+    // Use rate limiter for all API calls
+    return metricsApiRateLimiter.enqueue(async () => {
+      for (let attempt = 1; attempt <= retryCount; attempt++) {
+        try {
+          logger.info(`[TxCount Update] Starting update for chain ${chainId} (Attempt ${attempt}/${retryCount})`);
+          
+          // Use the metrics API endpoint with cumulativeTxCount metric (daily interval)
+          const response = await axios.get(`${config.api.metrics.baseUrl}/chains/${chainId}/metrics/cumulativeTxCount`, {
+            params: {
+              timeInterval: 'day',
+              pageSize: 30
+            },
+            timeout: config.api.metrics.timeout,
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'l1beat-backend',
+              'Cache-Control': 'no-cache' // Avoid cached responses
+            }
+          });
+
+          // Enhanced error logging
+          if (!response.data) {
+            logger.warn(`[TxCount Update] No data in response for chain ${chainId}`);
+            continue;
+          }
+
+          if (!Array.isArray(response.data.results)) {
+            logger.warn(`[TxCount Update] Invalid response format for chain ${chainId}:`, response.data);
+            continue;
+          }
+
+          const currentTime = Math.floor(Date.now() / 1000);
+          const thirtyDaysAgo = currentTime - (30 * 24 * 60 * 60);
+
+          // Log raw data before filtering
+          logger.info(`[TxCount Update] Raw data for chain ${chainId}:`, {
+            resultsCount: response.data.results.length,
+            sampleData: response.data.results[0],
+            environment: process.env.NODE_ENV
+          });
+
+          // Validate and filter TxCount data
+          const validTxCountData = response.data.results.filter(item => {
+            const timestamp = Number(item.timestamp);
+            const value = parseFloat(item.value);
+            
+            if (isNaN(timestamp) || isNaN(value)) {
+              logger.warn(`[TxCount Update] Invalid data point for chain ${chainId}:`, item);
+              return false;
+            }
+            
+            const isValid = timestamp >= thirtyDaysAgo && timestamp <= currentTime;
+            if (!isValid) {
+              logger.warn(`[TxCount Update] Out of range timestamp for chain ${chainId}:`, {
+                timestamp: new Date(timestamp * 1000).toISOString(),
+                value
+              });
+            }
+            
+            return isValid;
+          });
+
+          // If we have valid data, proceed with update
+          if (validTxCountData.length > 0) {
+            const result = await CumulativeTxCount.bulkWrite(
+              validTxCountData.map(item => ({
+                updateOne: {
+                  filter: { 
+                    chainId: chainId,
+                    timestamp: Number(item.timestamp)
+                  },
+                  update: { 
+                    $set: { 
+                      value: parseFloat(item.value),
+                      lastUpdated: new Date() 
+                    }
+                  },
+                  upsert: true
+                }
+              })),
+              { ordered: false } // Continue processing even if some operations fail
+            );
+
+            logger.info(`[TxCount Update] Success for chain ${chainId}:`, {
+              validDataPoints: validTxCountData.length,
+              matched: result.matchedCount,
+              modified: result.modifiedCount,
+              upserted: result.upsertedCount,
+              environment: process.env.NODE_ENV
+            });
+
+            return result;
+          }
+
+          logger.warn(`[TxCount Update] No valid data points for chain ${chainId}`);
+          return null;
+
+        } catch (error) {
+          const status = error.response?.status;
+          logger.error(`[TxCount Update] Error for chain ${chainId} (Attempt ${attempt}/${retryCount}):`, {
+            message: error.message,
+            status: status,
+            data: error.response?.data,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+          });
+
+          // Special handling for rate limiting
+          if (status === 429) {
+            logger.warn(`[TxCount Update] Rate limit exceeded for metrics API, backing off...`);
+            
+            if (attempt < retryCount) {
+              // Exponential backoff with jitter for rate limit errors
+              const backoffTime = initialBackoffMs * Math.pow(2, attempt - 1) * (0.75 + Math.random() * 0.5);
+              logger.info(`[TxCount Update] Will retry after ${Math.round(backoffTime/1000)}s`);
+              await new Promise(resolve => setTimeout(resolve, backoffTime));
+            }
+          } else if (attempt < retryCount) {
+            // Normal retry for other errors, with shorter backoff
+            const backoffTime = initialBackoffMs * (attempt - 1) * (0.75 + Math.random() * 0.5);
+            await new Promise(resolve => setTimeout(resolve, backoffTime));
+          }
+
+          if (attempt === retryCount) {
+            // On final attempt, log but don't throw
+            logger.error(`[TxCount Update] All attempts failed for chain ${chainId}`);
+            return null;
+          }
+        }
+      }
+      return null;
+    });
+  }
+
+  /**
+   * Gets cumulative transaction count history for a specific chain
+   * @param {string} chainId - The chain ID
+   * @param {number} days - Number of days of history to fetch
+   * @returns {Promise<Array>} - Array of transaction count data points
+   */
+  async getTxCountHistory(chainId, days = 30) {
+    try {
+      // Check cache first
+      const cacheKey = `txcount_history_${chainId}_${days}`;
+      const cacheManager = require('../utils/cacheManager');
+      const cachedData = cacheManager.get(cacheKey);
+      if (cachedData) {
+        logger.debug('Returning cached TxCount history data');
+        return cachedData;
+      }
+
+      const existingData = await CumulativeTxCount.countDocuments({ chainId });
+      
+      if (existingData === 0) {
+        logger.info(`No TxCount history found for chain ${chainId}, fetching from API...`);
+        await this.updateCumulativeTxCount(chainId, config.api.metrics.rateLimit.maxRetries, config.api.metrics.rateLimit.retryDelay);
+      }
+
+      const cutoffDate = Math.floor(Date.now() / 1000) - (days * 24 * 60 * 60);
+      
+      const data = await CumulativeTxCount.find({
+        chainId,
+        timestamp: { $gte: cutoffDate }
+      })
+        .sort({ timestamp: -1 })
+        .select('-_id timestamp value')
+        .lean();
+      
+      logger.info(`Found ${data.length} TxCount records for chain ${chainId}`);
+      
+      // Cache the result for 5 minutes
+      cacheManager.set(cacheKey, data, config.cache.txCount);
+      
+      return data;
+    } catch (error) {
+      logger.error(`Error fetching TxCount history: ${error.message}`);
+      throw new Error(`Error fetching TxCount history: ${error.message}`);
+    }
+  }
+
+  /**
+   * Gets the latest cumulative transaction count for a specific chain
+   * @param {string} chainId - The chain ID
+   * @returns {Promise<Object>} - The latest transaction count data
+   */
+  async getLatestTxCount(chainId) {
+    try {
+      // Check cache first
+      const cacheKey = `txcount_latest_${chainId}`;
+      const cacheManager = require('../utils/cacheManager');
+      const cachedData = cacheManager.get(cacheKey);
+      if (cachedData) {
+        logger.debug('Returning cached latest TxCount data');
+        return cachedData;
+      }
+
+      let latest = await CumulativeTxCount.findOne({ chainId })
+        .sort({ timestamp: -1 })
+        .select('-_id timestamp value')
+        .lean();
+
+      if (!latest) {
+        logger.info(`No TxCount data found for chain ${chainId}, fetching from API...`);
+        await this.updateCumulativeTxCount(chainId, config.api.metrics.rateLimit.maxRetries, config.api.metrics.rateLimit.retryDelay);
+        latest = await CumulativeTxCount.findOne({ chainId })
+          .sort({ timestamp: -1 })
+          .select('-_id timestamp value')
+          .lean();
+      }
+      
+      // Cache the result for 5 minutes
+      if (latest) {
+        cacheManager.set(cacheKey, latest, config.cache.txCount);
+      }
+      
+      return latest;
+    } catch (error) {
+      logger.error(`Error fetching latest TxCount: ${error.message}`);
+      throw new Error(`Error fetching latest TxCount: ${error.message}`);
     }
   }
 }

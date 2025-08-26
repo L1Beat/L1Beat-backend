@@ -10,14 +10,20 @@ const { TeleporterUpdateState } = require('../models/teleporterMessage');
 exports.getDailyCrossChainMessageCount = async (req, res) => {
     try {
         logger.info('Fetching daily cross-chain message count...');
-        const messageCount = await teleporterService.getDailyCrossChainMessageCount();
+        
+        // DIAGNOSTIC: Add unique request ID to track this request through the system
+        const requestId = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+        logger.info(`DIAGNOSTIC: Daily cross-chain message count request started [${requestId}]`);
+        
+        const messageCount = await teleporterService.getDailyCrossChainMessageCount(requestId);
         
         // Get the most recent data from the database to include metadata
         const recentData = await teleporterService.getAnyMessageCountFromDB('daily');
         
         logger.info('Daily cross-chain message count fetched:', {
             count: messageCount.length,
-            totalMessages: messageCount.reduce((sum, item) => sum + item.messageCount, 0)
+            totalMessages: messageCount.reduce((sum, item) => sum + item.messageCount, 0),
+            requestId // Add request ID to track through logs
         });
         
         // Ensure we're working with plain objects, not Mongoose documents
@@ -56,6 +62,10 @@ exports.getWeeklyCrossChainMessageCount = async (req, res) => {
     try {
         logger.info('Fetching weekly cross-chain message count (last 7 days)...');
         
+        // Generate a unique request ID for tracking this request through the system
+        const requestId = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+        logger.info(`DIAGNOSTIC: Weekly cross-chain message count request started [${requestId}]`);
+        
         // Get the most recent data from the database
         const recentData = await teleporterService.getAnyMessageCountFromDB('weekly');
         
@@ -71,18 +81,19 @@ exports.getWeeklyCrossChainMessageCount = async (req, res) => {
         if ((!recentData || (Date.now() - new Date(recentData.updatedAt).getTime() > 24 * 60 * 60 * 1000)) && 
             (!updateState || updateState.state !== 'in_progress')) {
             
-            logger.info('Weekly data is missing or older than 24 hours, triggering background update');
+            logger.info('Weekly data is missing or older than 24 hours, triggering background update', { requestId });
             
-            // Trigger the update in the background using the new method that fetches all data at once
-            teleporterService.fetchWeeklyTeleporterDataAtOnce().catch(err => {
+            // Trigger the update in the background using the new method
+            teleporterService.updateWeeklyData().catch(err => {
                 logger.error('Error during automatic weekly data update:', {
                     message: err.message,
-                    stack: err.stack
+                    stack: err.stack,
+                    requestId
                 });
             });
             
             updateTriggered = true;
-            logger.info('Weekly data update has been triggered in the background');
+            logger.info('Weekly data update has been triggered in the background', { requestId });
         }
         // If we have stale update state, fix it
         else if (updateState && updateState.state === 'in_progress') {
@@ -96,7 +107,8 @@ exports.getWeeklyCrossChainMessageCount = async (req, res) => {
                 logger.info('Found stale or inconsistent update state, marking as failed', {
                     updateStateLastUpdated: lastUpdated.toISOString(),
                     dataUpdatedAt: recentData ? recentData.updatedAt.toISOString() : 'No data',
-                    timeSinceUpdateMs: timeSinceUpdate
+                    timeSinceUpdateMs: timeSinceUpdate,
+                    requestId
                 });
                 
                 // Update the state to failed
@@ -110,18 +122,19 @@ exports.getWeeklyCrossChainMessageCount = async (req, res) => {
                 
                 // If data is very old, trigger a new update
                 if (!recentData || (Date.now() - new Date(recentData.updatedAt).getTime() > 24 * 60 * 60 * 1000)) {
-                    logger.info('Weekly data is missing or older than 24 hours, triggering new background update');
+                    logger.info('Weekly data is missing or older than 24 hours, triggering new background update', { requestId });
                     
-                    // Trigger the update in the background using the new method that fetches all data at once
-                    teleporterService.fetchWeeklyTeleporterDataAtOnce().catch(err => {
+                    // Trigger the update in the background using the new method
+                    teleporterService.updateWeeklyData().catch(err => {
                         logger.error('Error during automatic weekly data update:', {
                             message: err.message,
-                            stack: err.stack
+                            stack: err.stack,
+                            requestId
                         });
                     });
                     
                     updateTriggered = true;
-                    logger.info('Weekly data update has been triggered in the background');
+                    logger.info('Weekly data update has been triggered in the background', { requestId });
                 }
             }
         }

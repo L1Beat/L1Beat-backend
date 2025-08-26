@@ -8,17 +8,18 @@ const config = require('./config/config');
 const connectDB = require('./config/db');
 const chainRoutes = require('./routes/chainRoutes');
 const fetchAndUpdateData = require('./utils/fetchGlacierData');
-const tvlRoutes = require('./routes/tvlRoutes');
-const TVL = require('./models/tvl');
-const tvlService = require('./services/tvlService');
 const chainDataService = require('./services/chainDataService');
 const Chain = require('./models/chain');
 const chainService = require('./services/chainService');
 const tpsRoutes = require('./routes/tpsRoutes');
 const tpsService = require('./services/tpsService');
 const TPS = require('./models/tps');
+const cumulativeTxCountRoutes = require('./routes/cumulativeTxCountRoutes');
 const teleporterRoutes = require('./routes/teleporterRoutes');
 const logger = require('./utils/logger');
+const blogRoutes = require('./routes/blogRoutes');
+const substackService = require('./services/substackService');
+
 
 const app = express();
 
@@ -32,7 +33,7 @@ if (isVercel || config.isProduction) {
 }
 
 // Add debugging logs
-logger.info('Starting server', { 
+logger.info('Starting server', {
   environment: config.env,
   mongoDbUri: config.isProduction
     ? 'PROD URI is set: ' + !!process.env.PROD_MONGODB_URI
@@ -51,23 +52,25 @@ const apiLimiter = rateLimit(config.rateLimit);
 // Apply rate limiting to all API routes
 app.use('/api', apiLimiter);
 
-// CORS middleware
+// CORS middleware with more explicit development settings
 if (config.env === 'development') {
-  // Disable CORS entirely in development for easier testing
-  app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    
-    // Handle preflight requests
-    if (req.method === 'OPTIONS') {
-      return res.status(200).end();
-    }
-    
-    next();
-  });
+  logger.info('Using development CORS settings, allowing localhost origins');
+  app.use(cors({
+    origin: ['http://localhost:5173', 'http://localhost:4173'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Requested-With',
+      'Accept',
+      'Origin',
+      'Cache-Control'
+    ]
+  }));
 } else {
   // Use configured CORS in production
+  logger.info('Using production CORS settings');
   app.use(cors(config.cors));
 }
 
@@ -76,7 +79,7 @@ app.use(express.json());
 // Single initialization point for data updates
 const initializeDataUpdates = async () => {
   logger.info(`[${config.env}] Initializing data updates at ${new Date().toISOString()}`);
-  
+
   try {
     // First update chains
     logger.info('Fetching initial chain data...');
@@ -88,9 +91,11 @@ const initializeDataUpdates = async () => {
         await chainService.updateChain(chain);
         // Add initial TPS update for each chain
         await tpsService.updateTpsData(chain.chainId);
+        // Add initial Transaction Count update for each chain
+        await tpsService.updateCumulativeTxCount(chain.chainId);
       }
       logger.info(`Updated ${chains.length} chains in database`);
-      
+
       // Verify chains were saved
       const savedChains = await Chain.find();
       logger.info('Chains in database:', {
@@ -101,33 +106,35 @@ const initializeDataUpdates = async () => {
       logger.error('No chains fetched from Glacier API');
     }
 
-    // Then update TVL
-    logger.info('Updating TVL data...');
-    await tvlService.updateTvlData();
-    
-    // Verify TVL update
-    const lastTVL = await TVL.findOne().sort({ date: -1 });
-    logger.info('TVL Update Result:', {
-      lastUpdate: lastTVL?.date ? new Date(lastTVL.date * 1000).toISOString() : 'none',
-      tvl: lastTVL?.tvl,
-      timestamp: new Date().toISOString()
-    });
+    // Initial blog sync
+    logger.info('[BLOG INIT] Updating initial blog data...');
+    (async () => {
+      try {
+        await substackService.syncArticles('initial-sync');
+        logger.info('[BLOG INIT] Blog data initialization completed');
+      } catch (error) {
+        logger.error('[BLOG INIT] Error initializing blog data:', {
+          message: error.message,
+          stack: error.stack
+        });
+      }
+    })();
 
     // Initial teleporter data update
-    logger.info('Updating initial teleporter data...');
+    logger.info('[TELEPORTER INIT] Updating initial daily teleporter data...');
     const teleporterService = require('./services/teleporterService');
     await teleporterService.updateTeleporterData();
 
     // Initialize weekly data if needed
     if (config.initWeeklyData) {
-      logger.info('Initializing weekly data...');
+      logger.info('[TELEPORTER INIT] Initializing weekly teleporter data...');
       (async () => {
         try {
-          // Use the new method that fetches all data at once
-          await teleporterService.fetchWeeklyTeleporterDataAtOnce();
-          logger.info('Weekly data initialization completed');
+          // Update weekly data
+          await teleporterService.updateWeeklyData();
+          logger.info('[TELEPORTER INIT] Weekly data initialization completed');
         } catch (error) {
-          logger.error('Error initializing weekly data:', {
+          logger.error('[TELEPORTER INIT] Error initializing weekly data:', {
             message: error.message,
             stack: error.stack
           });
@@ -141,17 +148,6 @@ const initializeDataUpdates = async () => {
 
   // Set up scheduled updates for both production and development
   logger.info('Setting up update schedules...');
-  
-  // TVL updates every 30 minutes
-  cron.schedule(config.cron.tvlUpdate, async () => {
-    try {
-      logger.info(`[CRON] Starting scheduled TVL update at ${new Date().toISOString()}`);
-      await tvlService.updateTvlData();
-      logger.info('[CRON] TVL update completed');
-    } catch (error) {
-      logger.error('[CRON] TVL update failed:', error);
-    }
-  });
 
   // Chain and TPS updates every hour
   cron.schedule(config.cron.chainUpdate, async () => {
@@ -162,133 +158,127 @@ const initializeDataUpdates = async () => {
         await chainService.updateChain(chain);
         // Add TPS update for each chain
         await tpsService.updateTpsData(chain.chainId);
+        // Add Transaction Count update for each chain
+        await tpsService.updateCumulativeTxCount(chain.chainId);
       }
-      logger.info(`[CRON] Updated ${chains.length} chains with TPS data`);
+      logger.info(`[CRON] Updated ${chains.length} chains with TPS and Transaction Count data`);
     } catch (error) {
-      logger.error('[CRON] Chain/TPS update failed:', error);
+      logger.error('[CRON] Chain/TPS/TxCount update failed:', error);
     }
   });
 
   // Teleporter data updates every hour
   cron.schedule(config.cron.teleporterUpdate, async () => {
     try {
-      logger.info(`[CRON] Starting scheduled teleporter update at ${new Date().toISOString()}`);
+      logger.info(`[CRON TELEPORTER DAILY] Starting scheduled daily teleporter update at ${new Date().toISOString()}`);
       const teleporterService = require('./services/teleporterService');
       await teleporterService.updateTeleporterData();
-      logger.info('[CRON] Teleporter update completed');
+      logger.info('[CRON TELEPORTER DAILY] Daily teleporter update completed');
     } catch (error) {
-      logger.error('[CRON] Teleporter update failed:', error);
+      logger.error('[CRON TELEPORTER DAILY] Daily teleporter update failed:', error);
+    }
+  });
+
+  // Blog RSS sync every 12 hours
+  cron.schedule(config.cron.blogSync, async () => {
+    try {
+      logger.info(`[CRON BLOG] Starting scheduled blog sync at ${new Date().toISOString()}`);
+      const result = await substackService.syncArticles('scheduled-sync');
+      logger.info('[CRON BLOG] Blog sync completed:', result);
+    } catch (error) {
+      logger.error('[CRON BLOG] Blog sync failed:', error);
     }
   });
 
   // Weekly teleporter data updates once a day
   cron.schedule('0 0 * * *', async () => {
     try {
-      logger.info(`[CRON] Starting scheduled weekly teleporter update at ${new Date().toISOString()}`);
+      logger.info(`[CRON TELEPORTER WEEKLY] Starting scheduled weekly teleporter update at ${new Date().toISOString()}`);
       const teleporterService = require('./services/teleporterService');
-      
+
       // Check if there's already an update in progress
       const { TeleporterUpdateState, TeleporterMessage } = require('./models/teleporterMessage');
-      const existingUpdate = await TeleporterUpdateState.findOne({ 
+      const existingUpdate = await TeleporterUpdateState.findOne({
         updateType: 'weekly',
         state: 'in_progress'
       });
-      
+
       if (existingUpdate) {
-        // Check if it's stale
-        const lastUpdated = new Date(existingUpdate.lastUpdatedAt);
-        const timeSinceUpdate = new Date().getTime() - lastUpdated.getTime();
-        
-        if (timeSinceUpdate > 5 * 60 * 1000) { // 5 minutes
-          logger.warn('[CRON] Found stale weekly update, resetting it...', {
-            lastUpdated: lastUpdated.toISOString(),
-            timeSinceUpdateMs: timeSinceUpdate
-          });
-          
-          existingUpdate.state = 'failed';
-          existingUpdate.lastUpdatedAt = new Date();
-          existingUpdate.error = {
-            message: 'Update timed out',
-            details: `No updates for ${Math.round(timeSinceUpdate / 1000 / 60)} minutes`
-          };
-          await existingUpdate.save();
-        } else {
-          logger.info('[CRON] Weekly update already in progress, skipping...', {
-            startedAt: existingUpdate.startedAt,
-            lastUpdatedAt: existingUpdate.lastUpdatedAt,
-            progress: existingUpdate.progress
-          });
-          return;
-        }
+        logger.info('[CRON TELEPORTER WEEKLY] Weekly teleporter update already in progress, skipping scheduled update');
+        return;
       }
-      
-      // Check if we have any weekly data
-      const anyWeeklyData = await TeleporterMessage.findOne({ dataType: 'weekly' });
-      
-      // If no data exists, log a special message
-      if (!anyWeeklyData) {
-        logger.info('[CRON] No weekly teleporter data found, initializing for the first time');
-      }
-      
-      // Start the update using the new method that fetches all data at once
-      await teleporterService.fetchWeeklyTeleporterDataAtOnce();
-      logger.info('[CRON] Weekly teleporter update completed');
+
+      await teleporterService.updateWeeklyData();
+      logger.info('[CRON TELEPORTER WEEKLY] Weekly teleporter update completed');
     } catch (error) {
-      logger.error('[CRON] Weekly teleporter update failed:', error);
-    }
-  });
-
-  // Check TPS data every 15 minutes
-  cron.schedule(config.cron.tpsVerification, async () => {
-    try {
-        logger.info(`[CRON] Starting TPS verification at ${new Date().toISOString()}`);
-        
-        const currentTime = Math.floor(Date.now() / 1000);
-        const oneDayAgo = currentTime - (24 * 60 * 60);
-        
-        // Get chains with missing or old TPS data
-        const chains = await Chain.find().select('chainId').lean();
-        const tpsData = await TPS.find({
-            timestamp: { $gte: oneDayAgo }
-        }).distinct('chainId');
-
-        const chainsNeedingUpdate = chains.filter(chain => 
-            !tpsData.includes(chain.chainId)
-        );
-
-        if (chainsNeedingUpdate.length > 0) {
-            logger.info(`[CRON] Found ${chainsNeedingUpdate.length} chains needing TPS update`);
-            
-            // Update chains in batches
-            const BATCH_SIZE = 5;
-            for (let i = 0; i < chainsNeedingUpdate.length; i += BATCH_SIZE) {
-                const batch = chainsNeedingUpdate.slice(i, i + BATCH_SIZE);
-                await Promise.all(
-                    batch.map(chain => tpsService.updateTpsData(chain.chainId))
-                );
-                if (i + BATCH_SIZE < chainsNeedingUpdate.length) {
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
-            }
-        }
-
-        logger.info(`[CRON] TPS verification complete at ${new Date().toISOString()}`);
-    } catch (error) {
-        logger.error('[CRON] TPS verification failed:', error);
+      logger.error('[CRON TELEPORTER WEEKLY] Weekly teleporter update failed:', error);
     }
   });
 };
 
 // Call initialization after DB connection
-connectDB().then(() => {
+connectDB().then(async () => {
+  // First, check for and fix any stale teleporter updates
+  await fixStaleUpdates();
+
+  // Then continue with normal initialization
   initializeDataUpdates();
 });
 
+/**
+ * Helper function to check for and fix any stale teleporter updates
+ * This ensures we don't get stuck with in_progress updates that never complete
+ */
+async function fixStaleUpdates() {
+  try {
+    logger.info('Checking for stale teleporter updates on startup...');
+
+    // Import required models
+    const { TeleporterUpdateState } = require('./models/teleporterMessage');
+
+    // Find any in_progress updates
+    const staleUpdates = await TeleporterUpdateState.find({
+      state: 'in_progress'
+    });
+
+    if (staleUpdates.length > 0) {
+      logger.warn(`Found ${staleUpdates.length} stale teleporter updates on startup, marking as failed`, {
+        updates: staleUpdates.map(u => ({
+          type: u.updateType,
+          startedAt: u.startedAt,
+          lastUpdatedAt: u.lastUpdatedAt,
+          timeSinceLastUpdate: Math.round((Date.now() - new Date(u.lastUpdatedAt).getTime()) / (60 * 1000)) + ' minutes'
+        }))
+      });
+
+      // Mark all stale updates as failed
+      for (const update of staleUpdates) {
+        update.state = 'failed';
+        update.lastUpdatedAt = new Date();
+        update.error = {
+          message: 'Update timed out (found on server startup)',
+          details: `Update was still in_progress state when server restarted`
+        };
+        await update.save();
+        logger.info(`Marked stale ${update.updateType} update as failed`, {
+          startedAt: update.startedAt,
+          lastUpdatedAt: update.lastUpdatedAt
+        });
+      }
+    } else {
+      logger.info('No stale teleporter updates found on startup');
+    }
+  } catch (error) {
+    logger.error('Error checking for stale updates:', error);
+  }
+}
+
 // Routes
 app.use('/api', chainRoutes);
-app.use('/api', tvlRoutes);
 app.use('/api', tpsRoutes);
+app.use('/api', cumulativeTxCountRoutes);
 app.use('/api', teleporterRoutes);
+app.use('/api', blogRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -318,7 +308,7 @@ if (isDevelopment) {
 // Error handling middleware
 app.use((err, req, res, next) => {
   logger.error('Error:', { message: err.message, stack: err.stack, path: req.path });
-  
+
   // Send proper JSON response
   res.status(500).json({
     error: 'Internal Server Error',
@@ -337,21 +327,17 @@ app.use('*', (req, res) => {
   });
 });
 
-// Add OPTIONS handling for preflight requests
-app.options('*', cors());
-
 const PORT = process.env.PORT || 5001;
 
 // Check for required environment variables before starting
 const requiredEnvVars = [
   'GLACIER_API_BASE',
-  'DEFILLAMA_API_BASE',
   'METRICS_API_BASE'
 ];
 
 const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
 if (missingEnvVars.length > 0) {
-  logger.error('Missing required environment variables:', { 
+  logger.error('Missing required environment variables:', {
     missing: missingEnvVars.join(', ')
   });
   logger.error('Please check your .env file and make sure these variables are set.');
