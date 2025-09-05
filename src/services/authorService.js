@@ -1,5 +1,11 @@
 const Author = require("../models/author");
 const logger = require("../utils/logger");
+const path = require("path");
+const fs = require("fs");
+
+// Load author configuration
+const authorsConfigPath = path.join(__dirname, "../../config/authors.json");
+const authorsConfig = JSON.parse(fs.readFileSync(authorsConfigPath, "utf8"));
 
 class AuthorService {
   constructor() {
@@ -74,14 +80,18 @@ class AuthorService {
         ? `https://${substackSlug}.substack.com`
         : "";
 
+      // Use defaults from JSON configuration
+      const defaults = authorsConfig.autoCreateDefaults;
+      
       const author = new Author({
         name: authorName,
         slug: slug,
-        bio: `Writer at L1Beat, contributing insights on Avalanche L1s and blockchain analytics.`,
+        bio: defaults.bio,
         avatar: "", // Will use default avatar in frontend
-        role: "Contributor",
+        role: defaults.role,
         substackNames: [authorName],
         socialLinks: {
+          ...defaults.socialLinks,
           substack: substackUrl,
         },
         isActive: true,
@@ -114,23 +124,8 @@ class AuthorService {
       return [this.formatAuthorForResponse(defaultAuthor)];
     } catch (error) {
       logger.error("Error getting default authors:", error.message);
-      return [
-        {
-          name: "L1Beat",
-          slug: "l1beat",
-          bio: "L1Beat provides comprehensive analytics and insights for Avalanche L1 ecosystems.",
-          avatar: "",
-          role: "Publisher",
-          socialLinks: {
-            twitter: "https://x.com/l1beat_io",
-            website: "https://l1beat.io",
-            github: "",
-            linkedin: "",
-          },
-          postCount: 0,
-          joinDate: null,
-        },
-      ];
+      // Return fallback from JSON config
+      return [authorsConfig.fallbackAuthor];
     }
   }
 
@@ -140,20 +135,16 @@ class AuthorService {
    */
   async createDefaultL1BeatProfile() {
     try {
-      const defaultAuthor = new Author({
-        name: "L1Beat",
-        slug: "l1beat",
-        bio: "L1Beat provides comprehensive analytics and insights for Avalanche L1 ecosystems.",
-        role: "Publisher",
-        substackNames: ["L1Beat", "L1Beat", "l1beat"],
-        socialLinks: {
-          website: "https://l1beat.io",
-          twitter: "https://x.com/l1beat_io",
-          substack: "https://l1beat.substack.com",
-        },
-        isActive: true,
-      });
+      // Find the L1Beat config from JSON
+      const l1beatConfig = authorsConfig.defaultAuthors.find(
+        author => author.name === "L1Beat"
+      );
+      
+      if (!l1beatConfig) {
+        throw new Error("L1Beat author configuration not found in authors.json");
+      }
 
+      const defaultAuthor = new Author(l1beatConfig);
       await defaultAuthor.save();
       logger.info("Created default L1Beat author profile");
       return defaultAuthor;

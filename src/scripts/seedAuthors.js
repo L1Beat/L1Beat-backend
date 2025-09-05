@@ -1,37 +1,14 @@
 const mongoose = require("mongoose");
+const path = require("path");
+const fs = require("fs");
 const Author = require("../models/author");
 const logger = require("../utils/logger");
 require("dotenv").config();
 
-// Default author profiles
-const defaultAuthors = [
-  {
-    name: "L1Beat",
-    slug: "l1beat",
-    bio: "L1Beat provides comprehensive analytics and insights for Avalanche L1 ecosystems, delivering real-time data and analysis to help developers and investors navigate the growing L1 landscape.",
-    role: "Publisher",
-    socialLinks: {
-      website: "https://l1beat.io",
-      twitter: "https://x.com/l1beat_io",
-      substack: "https://l1beat.substack.com",
-    },
-    substackNames: ["L1Beat", "L1Beat", "l1beat"],
-    isActive: true,
-  },
-  {
-    name: "Ayash Bera",
-    slug: "ayash-bera",
-    bio: "Blockchain analyst and researcher with expertise in Avalanche ecosystem development. Focuses on L1 performance metrics and validator analytics.",
-    role: "Developer",
-    socialLinks: {
-      twitter: "https://x.com/ayashtwtt",
-      website: "https://ayashbera.me",
-      substack: "https://substack.com/@ayash2",
-    },
-    substackNames: ["Ayash Bera", "ayash bera", "ayash"],
-    isActive: true,
-  },
-];
+// Load author configuration from JSON file
+const authorsConfigPath = path.join(__dirname, "../../config/authors.json");
+const authorsConfig = JSON.parse(fs.readFileSync(authorsConfigPath, "utf8"));
+const { defaultAuthors } = authorsConfig;
 
 async function seedAuthors() {
   try {
@@ -108,4 +85,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { seedAuthors, defaultAuthors };
+module.exports = { seedAuthors, authorsConfig };
