@@ -1,0 +1,57 @@
+{
+  "defaultAuthors": [
+    {
+      "name": "L1Beat",
+      "slug": "l1beat",
+      "bio": "L1Beat provides comprehensive analytics and insights for Avalanche L1 ecosystems, delivering real-time data and analysis to help developers and investors navigate the growing L1 landscape.",
+      "role": "Publisher",
+      "avatar": "https://i.postimg.cc/zXb7Q9Yd/ggggg.png",
+      "socialLinks": {
+        "website": "https://l1beat.io",
+        "twitter": "https://x.com/l1beat_io",
+        "substack": "https://l1beat.substack.com"
+      },
+      "substackNames": ["L1Beat", "L1Beat", "l1beat"],
+      "isActive": true
+    },
+    {
+      "name": "Ayash Bera",
+      "slug": "ayash-bera",
+      "bio": "Blockchain analyst and researcher with expertise in Avalanche ecosystem development. Focuses on L1 performance metrics and validator analytics.",
+      "role": "Developer",
+      "avatar": "https://i.postimg.cc/zXb7Q9Yd/ggggg.png",
+      "socialLinks": {
+        "twitter": "https://x.com/ayashtwtt",
+        "website": "https://ayashbera.me",
+        "substack": "https://substack.com/@ayash2"
+      },
+      "substackNames": ["Ayash Bera", "ayash bera", "Ayash", "ayash"],
+      "isActive": true
+    }
+  ],
+  "fallbackAuthor": {
+    "name": "L1Beat",
+    "slug": "l1beat",
+    "bio": "L1Beat provides comprehensive analytics and insights for Avalanche L1 ecosystems.",
+    "role": "Publisher",
+    "avatar": "https://i.postimg.cc/zXb7Q9Yd/ggggg.png",
+    "socialLinks": {
+      "twitter": "https://x.com/l1beat_io",
+      "website": "https://l1beat.io",
+      "github": "",
+      "linkedin": ""
+    },
+    "postCount": 0,
+    "joinDate": null
+  },
+  "autoCreateDefaults": {
+    "bio": "Writer at L1Beat, contributing insights on Avalanche L1s and blockchain analytics.",
+    "role": "Contributor",
+    "socialLinks": {
+      "twitter": "",
+      "linkedin": "",
+      "website": "",
+      "github": ""
+    }
+  }
+}

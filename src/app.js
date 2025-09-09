@@ -18,6 +18,7 @@ const cumulativeTxCountRoutes = require('./routes/cumulativeTxCountRoutes');
 const teleporterRoutes = require('./routes/teleporterRoutes');
 const logger = require('./utils/logger');
 const blogRoutes = require('./routes/blogRoutes');
+const authorRoutes = require('./routes/authorRoutes');
 const substackService = require('./services/substackService');
 
 
@@ -279,6 +280,7 @@ app.use('/api', tpsRoutes);
 app.use('/api', cumulativeTxCountRoutes);
 app.use('/api', teleporterRoutes);
 app.use('/api', blogRoutes);
+app.use('/api/authors', authorRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

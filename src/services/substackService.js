@@ -3,6 +3,7 @@ const xml2js = require("xml2js");
 const config = require("../config/config");
 const logger = require("../utils/logger");
 const BlogPost = require("../models/blogPost");
+const authorService = require("./authorService");
 const cheerio = require("cheerio");
 
 class SubstackService {
@@ -73,7 +74,7 @@ class SubstackService {
 
       // Fallback: Use default if no authors found
       if (!authors.length) {
-        authors.push("L1Beat Team");
+        authors.push("L1Beat");
       }
 
       // Clean and deduplicate authors
@@ -91,10 +92,10 @@ class SubstackService {
         extractedAuthors: cleanedAuthors,
       });
 
-      return cleanedAuthors.length > 0 ? cleanedAuthors : ["L1Beat Team"];
+      return cleanedAuthors.length > 0 ? cleanedAuthors : ["L1Beat"];
     } catch (error) {
       logger.error("Error extracting authors from RSS item:", error.message);
-      return ["L1Beat Team"];
+      return ["L1Beat"];
     }
   }
 
@@ -291,7 +292,7 @@ class SubstackService {
               excerpt: excerpt,
               publishedAt: pubDate,
               authors: authors, // UPDATED: Use extracted authors array
-              author: authors[0] || "L1Beat Team", // Keep for backward compatibility
+              author: authors[0] || "L1Beat", // Keep for backward compatibility
               substackUrl: link,
               substackId: substackId,
               tags: tags,
@@ -368,6 +369,9 @@ class SubstackService {
           // Calculate reading time
           const readingTime = this.calculateReadingTime(postData.content);
 
+          // Map authors to profiles
+          const authorProfiles = await authorService.mapSubstackAuthors(postData.authors);
+
           // Prepare data for database
           const dbData = {
             ...postData,
@@ -377,8 +381,9 @@ class SubstackService {
             // Ensure new fields have defaults
             subtitle: postData.subtitle || "",
             mainContent: postData.mainContent || postData.content,
-            authors: postData.authors || ["L1Beat Team"], // UPDATED: Ensure authors array
-            author: postData.authors ? postData.authors[0] : "L1Beat Team", // Keep for compatibility
+            authors: postData.authors || ["L1Beat"], // UPDATED: Ensure authors array
+            author: postData.authors ? postData.authors[0] : "L1Beat", // Keep for compatibility
+            authorProfiles: authorProfiles, // NEW: Add mapped author profiles
           };
 
           // Update or create post
