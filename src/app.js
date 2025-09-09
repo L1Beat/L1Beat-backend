@@ -71,8 +71,13 @@ app.use(cors({
       return callback(null, true);
     }
     
-    // Allow any localhost origin in development
+    // Allow localhost and container-based origins in development
     if (config.env === 'development' && origin.includes('localhost')) {
+      return callback(null, true);
+    }
+    
+    // Allow Bolt.new webcontainer URLs
+    if (origin.match(/^https:\/\/.*\.webcontainer-api\.io$/)) {
       return callback(null, true);
     }
     
