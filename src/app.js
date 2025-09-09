@@ -53,27 +53,44 @@ const apiLimiter = rateLimit(config.rateLimit);
 // Apply rate limiting to all API routes
 app.use('/api', apiLimiter);
 
-// CORS middleware with more explicit development settings
-if (config.env === 'development') {
-  logger.info('Using development CORS settings, allowing localhost origins');
-  app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:4173'],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-Requested-With',
-      'Accept',
-      'Origin',
-      'Cache-Control'
-    ]
-  }));
-} else {
-  // Use configured CORS in production
-  logger.info('Using production CORS settings');
-  app.use(cors(config.cors));
-}
+// CORS middleware with environment-aware settings
+const corsOrigins = config.cors.origin;
+logger.info('Using CORS settings', { 
+  environment: config.env,
+  origins: corsOrigins,
+  frontendUrl: process.env.FRONTEND_URL 
+});
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is in allowed list
+    if (corsOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Allow any localhost origin in development
+    if (config.env === 'development' && origin.includes('localhost')) {
+      return callback(null, true);
+    }
+    
+    // Log blocked origins for debugging
+    logger.warn('CORS blocked origin:', { origin, allowedOrigins: corsOrigins });
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Cache-Control'
+  ]
+}));
 
 app.use(express.json());
 

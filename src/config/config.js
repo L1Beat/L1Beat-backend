@@ -82,7 +82,8 @@ const config = {
             "https://www.l1beat.io",
             "http://localhost:4173",
             "http://localhost:5173",
-          ],
+            process.env.FRONTEND_URL,
+          ].filter(Boolean),
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: [
