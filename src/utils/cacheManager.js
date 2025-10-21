@@ -11,9 +11,25 @@ class CacheManager {
       sets: 0,
       evictions: 0
     };
-    
+
     // Run cache cleanup every 10 minutes
-    setInterval(() => this.cleanup(), 10 * 60 * 1000);
+    // Use unref() so it doesn't keep Node alive during tests
+    this.cleanupInterval = setInterval(() => this.cleanup(), 10 * 60 * 1000);
+    if (this.cleanupInterval.unref) {
+      this.cleanupInterval.unref();
+    }
+  }
+
+  /**
+   * Destroy the cache manager and clear cleanup interval
+   * Used for cleanup in tests
+   */
+  destroy() {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    this.clear();
   }
 
   /**

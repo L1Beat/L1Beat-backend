@@ -70,6 +70,15 @@ const config = {
       // Format: 'chainId': 'API endpoint URL'
       // Example: 'mychain': 'https://api.mychain.com/validators'
     },
+    snowpeer: {
+      baseUrl: process.env.SNOWPEER_API_BASE || "https://api.snowpeer.io/v1",
+      timeout: parseInt(process.env.SNOWPEER_API_TIMEOUT || "30000"),
+      rateLimit: {
+        requestsPerMinute: parseInt(process.env.SNOWPEER_RATE_LIMIT || "20"),
+        retryDelay: parseInt(process.env.SNOWPEER_RETRY_DELAY || "2000"),
+        maxRetries: parseInt(process.env.SNOWPEER_MAX_RETRIES || "3"),
+      },
+    },
   },
 
   // CORS
@@ -148,6 +157,7 @@ const config = {
     txCount: 5 * 60 * 1000, // 5 minutes
     teleporter: 5 * 60 * 1000, // 5 minutes
     blog: 10 * 60 * 1000, // 10 minutes
+    snowpeer: 5 * 60 * 1000, // 5 minutes
   },
 };
 

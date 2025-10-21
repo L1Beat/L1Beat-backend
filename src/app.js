@@ -19,6 +19,7 @@ const teleporterRoutes = require('./routes/teleporterRoutes');
 const logger = require('./utils/logger');
 const blogRoutes = require('./routes/blogRoutes');
 const authorRoutes = require('./routes/authorRoutes');
+const snowpeerRoutes = require('./routes/snowpeerRoutes');
 const substackService = require('./services/substackService');
 
 
@@ -239,13 +240,18 @@ const initializeDataUpdates = async () => {
   });
 };
 
-// Call initialization after DB connection
+// Call initialization after DB connection (skip in test mode)
+const isTestMode = process.env.NODE_ENV === 'test';
 connectDB().then(async () => {
-  // First, check for and fix any stale teleporter updates
-  await fixStaleUpdates();
+  if (!isTestMode) {
+    // First, check for and fix any stale teleporter updates
+    await fixStaleUpdates();
 
-  // Then continue with normal initialization
-  initializeDataUpdates();
+    // Then continue with normal initialization
+    initializeDataUpdates();
+  } else {
+    logger.info('Skipping background data updates in test mode');
+  }
 });
 
 /**
@@ -303,6 +309,7 @@ app.use('/api', cumulativeTxCountRoutes);
 app.use('/api', teleporterRoutes);
 app.use('/api', blogRoutes);
 app.use('/api/authors', authorRoutes);
+app.use('/api/snowpeer', snowpeerRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -371,8 +378,9 @@ if (missingEnvVars.length > 0) {
 // For Vercel, we need to export the app
 module.exports = app;
 
-// Only listen if not running on Vercel
-if (!isVercel) {
+// Only listen if not running on Vercel or in test mode
+const isTest = process.env.NODE_ENV === 'test';
+if (!isVercel && !isTest) {
   const server = app.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`, {
       environment: config.env,
