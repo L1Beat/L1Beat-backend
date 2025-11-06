@@ -41,4 +41,21 @@ router.get('/blockchains', snowpeerController.getBlockchains);
  */
 router.get('/validators/:nodeId', snowpeerController.getValidator);
 
+/**
+ * GET /api/snowpeer/subnets
+ * Fetch all subnets from SnowPeer (better than AMDB L1s)
+ * Query params:
+ *   - limit: number (default: 100)
+ *   - page: number (default: 1)
+ */
+router.get('/subnets', snowpeerController.getSubnets);
+
+/**
+ * GET /api/snowpeer/subnets/:id
+ * Fetch a single subnet by ID from SnowPeer (includes icon, color, validatorCount)
+ * Path params:
+ *   - id: Subnet ID
+ */
+router.get('/subnets/:id', snowpeerController.getSubnetById);
+
 module.exports = router;

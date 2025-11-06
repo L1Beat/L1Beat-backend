@@ -267,9 +267,126 @@ async function getValidator(req, res) {
   }
 }
 
+/**
+ * Fetch all subnets from SnowPeer
+ */
+async function getSubnets(req, res) {
+  try {
+    const { limit = 100, page = 1 } = req.query;
+    const cacheKey = `snowpeer-subnets-${limit}-${page}`;
+
+    // Check cache first
+    const cached = cacheManager.get(cacheKey);
+    if (cached) {
+      logger.debug('Returning cached SnowPeer subnets data', { limit, page });
+      return res.json(cached);
+    }
+
+    // Fetch from SnowPeer API with retry logic
+    logger.info('Fetching subnets from SnowPeer', { limit, page });
+
+    const response = await retryRequest(async () => {
+      return await axios.get(`${SNOWPEER_BASE_URL}/subnets`, {
+        params: { limit, page },
+        timeout: config.api?.snowpeer?.timeout || 30000,
+      });
+    });
+
+    const apiResponse = response.data;
+
+    // Normalize response format
+    const normalizedData = {
+      data: apiResponse.subnets || [],
+      metadata: apiResponse.metadata || []
+    };
+
+    // Cache the normalized result
+    cacheManager.set(cacheKey, normalizedData, config.cache?.snowpeer || 300000); // 5 min default
+
+    logger.info('Successfully fetched SnowPeer subnets', {
+      count: normalizedData.data.length
+    });
+
+    res.json(normalizedData);
+  } catch (error) {
+    logger.error('Error fetching SnowPeer subnets:', {
+      message: error.message,
+      stack: error.stack,
+      url: error.config?.url,
+      status: error.response?.status
+    });
+
+    // Return error response
+    res.status(error.response?.status || 500).json({
+      error: 'Failed to fetch subnets from SnowPeer',
+      message: error.message,
+      details: error.response?.data || null
+    });
+  }
+}
+
+/**
+ * Fetch a single subnet by ID from SnowPeer
+ */
+async function getSubnetById(req, res) {
+  try {
+    const { id } = req.params;
+    const cacheKey = `snowpeer-subnet-${id}`;
+
+    // Check cache first
+    const cached = cacheManager.get(cacheKey);
+    if (cached) {
+      logger.debug('Returning cached SnowPeer subnet data', { id });
+      return res.json(cached);
+    }
+
+    // Fetch from SnowPeer API with retry logic
+    logger.info('Fetching subnet from SnowPeer', { id });
+
+    const response = await retryRequest(async () => {
+      return await axios.get(`${SNOWPEER_BASE_URL}/subnets/${id}`, {
+        timeout: config.api?.snowpeer?.timeout || 30000,
+      });
+    });
+
+    const apiResponse = response.data;
+
+    // Normalize response format
+    const normalizedData = {
+      data: apiResponse
+    };
+
+    // Cache the normalized result
+    cacheManager.set(cacheKey, normalizedData, config.cache?.snowpeer || 300000); // 5 min default
+
+    logger.info('Successfully fetched SnowPeer subnet', { id, name: apiResponse.name || 'unknown' });
+
+    res.json(normalizedData);
+  } catch (error) {
+    logger.error('Error fetching SnowPeer subnet:', {
+      id: req.params.id,
+      message: error.message,
+      stack: error.stack,
+      url: error.config?.url,
+      status: error.response?.status
+    });
+
+    // Return 404 if not found, otherwise 500
+    const statusCode = error.response?.status === 404 ? 404 : (error.response?.status || 500);
+
+    res.status(statusCode).json({
+      error: 'Failed to fetch subnet from SnowPeer',
+      message: error.message,
+      details: error.response?.data || null
+    });
+  }
+}
+
 module.exports = {
   getL1s,
   getL1ById,
   getBlockchains,
-  getValidator
+  getValidator,
+  getSubnets,
+  getSubnetById
 };
