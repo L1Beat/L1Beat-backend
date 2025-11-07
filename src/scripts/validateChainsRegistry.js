@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const REGISTRY_DIR = path.join(__dirname, '../../../chains-registry');
+const REGISTRY_DIR = path.join(__dirname, '../../../chains-registry/data');
 
 /**
  * Validation results tracker
