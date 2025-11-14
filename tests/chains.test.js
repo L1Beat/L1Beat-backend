@@ -40,6 +40,49 @@ describe('Chain Endpoints', () => {
       }
     });
 
+    it('should return chains with registry metadata fields', async () => {
+      const response = await get('/api/chains');
+
+      expect(response.status).toBe(200);
+
+      if (response.body.length > 0) {
+        // Check for registry fields (they may be undefined for some chains)
+        const chainWithRegistryData = response.body.find(chain =>
+          chain.categories && chain.categories.length > 0
+        );
+
+        if (chainWithRegistryData) {
+          // Verify registry field structure
+          expect(Array.isArray(chainWithRegistryData.categories)).toBe(true);
+
+          if (chainWithRegistryData.website) {
+            expect(typeof chainWithRegistryData.website).toBe('string');
+          }
+
+          if (chainWithRegistryData.socials) {
+            expect(Array.isArray(chainWithRegistryData.socials)).toBe(true);
+
+            if (chainWithRegistryData.socials.length > 0) {
+              expect(chainWithRegistryData.socials[0]).toHaveProperty('name');
+              expect(chainWithRegistryData.socials[0]).toHaveProperty('url');
+            }
+          }
+
+          if (chainWithRegistryData.network) {
+            expect(['mainnet', 'fuji']).toContain(chainWithRegistryData.network);
+          }
+
+          if (chainWithRegistryData.evmChainId) {
+            expect(typeof chainWithRegistryData.evmChainId).toBe('number');
+          }
+
+          if (chainWithRegistryData.rpcUrls) {
+            expect(Array.isArray(chainWithRegistryData.rpcUrls)).toBe(true);
+          }
+        }
+      }
+    });
+
     it('should return JSON content type', async () => {
       const response = await get('/api/chains');
 

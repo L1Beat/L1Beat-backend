@@ -11,23 +11,43 @@ class ChainService {
         this.updateInterval = 30 * 60 * 1000; // 30 minutes
     }
 
-    // Get all chains
-    async getAllChains() {
+    // Get all chains with optional filtering
+    async getAllChains(filters = {}) {
         try {
-            // Check cache first
-            const cacheKey = 'all_chains';
+            const { category, network } = filters;
+
+            // Build cache key with filters
+            const cacheKey = `all_chains_${category || 'all'}_${network || 'all'}`;
             const cachedChains = cacheManager.get(cacheKey);
             if (cachedChains) {
                 logger.debug('Returning cached chains data');
                 return cachedChains;
             }
 
-            const chains = await Chain.find();
-            
+            // Build query
+            const query = {};
+            if (category) {
+                query.categories = category;
+            }
+            if (network) {
+                query.network = network;
+            }
+
+            const chains = await Chain.find(query);
+
             // Fetch latest TPS for each chain
             const chainsWithTps = await Promise.all(chains.map(async (chain) => {
                 try {
-                    const tpsData = await tpsService.getLatestTps(chain.chainId);
+                    // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
+                    const chainIdForTps = chain.evmChainId || chain.chainId;
+
+                    // Only fetch TPS if we have a numeric chain ID
+                    if (!chainIdForTps || !/^\d+$/.test(String(chainIdForTps))) {
+                        logger.debug(`Skipping TPS fetch for chain ${chain.chainName} - no valid numeric chain ID`);
+                        return chain.toObject();
+                    }
+
+                    const tpsData = await tpsService.getLatestTps(String(chainIdForTps));
                     return {
                         ...chain.toObject(),
                         tps: tpsData ? {
@@ -37,13 +57,13 @@ class ChainService {
                     };
                 } catch (error) {
                     logger.error(`Error fetching TPS for chain ${chain.chainId}:`, { error: error.message });
-                    return chain;
+                    return chain.toObject();
                 }
             }));
-            
+
             // Cache the result for 5 minutes
             cacheManager.set(cacheKey, chainsWithTps, config.cache.chains);
-            
+
             return chainsWithTps;
         } catch (error) {
             logger.error('Error fetching chains:', { error: error.message });
@@ -336,7 +356,7 @@ class ChainService {
             }
 
             logger.info(`Updating validators only for chain ${chainId}`);
-            
+
             const updatedChain = await Chain.findOneAndUpdate(
                 { chainId },
                 {
@@ -349,16 +369,62 @@ class ChainService {
             if (!updatedChain) {
                 throw new Error('Chain not found');
             }
-            
+
             // Invalidate cache for this chain
             cacheManager.delete(`chain_${chainId}`);
             cacheManager.delete('all_chains');
-            
+
             logger.info(`Updated ${updatedChain.validators.length} validators for chain ${chainId}`);
             return updatedChain;
         } catch (error) {
             logger.error(`Error updating validators for chain ${chainId}:`, { error: error.message });
             throw error;
+        }
+    }
+
+    // Get all unique categories
+    async getAllCategories() {
+        try {
+            const cacheKey = 'all_categories';
+            const cachedCategories = cacheManager.get(cacheKey);
+            if (cachedCategories) {
+                logger.debug('Returning cached categories');
+                return cachedCategories;
+            }
+
+            const categories = await Chain.distinct('categories');
+            const sortedCategories = categories.filter(cat => cat).sort();
+
+            cacheManager.set(cacheKey, sortedCategories, config.cache.chains);
+            return sortedCategories;
+        } catch (error) {
+            logger.error('Error fetching categories:', { error: error.message });
+            throw new Error(`Error fetching categories: ${error.message}`);
+        }
+    }
+
+    // Enrich chain with live Glacier data (validators, metrics)
+    async enrichChainWithGlacierData(chainData) {
+        try {
+            logger.debug(`Enriching chain ${chainData.chainName} with Glacier data`);
+
+            // Fetch validators if subnetId is available
+            let validators = [];
+            if (chainData.subnetId) {
+                validators = await this.fetchValidators(chainData.subnetId, chainData.chainId);
+            }
+
+            // Update chain with live data
+            const enrichedChain = {
+                ...chainData,
+                validators: validators,
+                lastUpdated: new Date()
+            };
+
+            return enrichedChain;
+        } catch (error) {
+            logger.error(`Error enriching chain with Glacier data:`, { error: error.message });
+            return chainData;
         }
     }
 }

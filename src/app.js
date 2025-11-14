@@ -105,18 +105,38 @@ const initializeDataUpdates = async () => {
   logger.info(`[${config.env}] Initializing data updates at ${new Date().toISOString()}`);
 
   try {
-    // First update chains
-    logger.info('Fetching initial chain data...');
+    // First, load the registry
+    logger.info('[REGISTRY] Loading l1-registry data...');
+    const registryService = require('./services/registryService');
+    const registryChains = await registryService.loadAllChains();
+    logger.info(`[REGISTRY] Loaded ${registryChains.length} chains from l1-registry`);
+
+    // Sync registry data to database
+    logger.info('[REGISTRY] Syncing registry data to database...');
+    await registryService.syncToDatabase(Chain);
+    logger.info('[REGISTRY] Registry sync complete');
+
+    // Then fetch and enrich with Glacier data
+    logger.info('Fetching initial chain data from Glacier...');
     const chains = await chainDataService.fetchChainData();
     logger.info(`Fetched ${chains.length} chains from Glacier API`);
 
     if (chains && chains.length > 0) {
       for (const chain of chains) {
         await chainService.updateChain(chain);
-        // Add initial TPS update for each chain
-        await tpsService.updateTpsData(chain.chainId);
-        // Add initial Transaction Count update for each chain
-        await tpsService.updateCumulativeTxCount(chain.chainId);
+
+        // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
+        const chainIdForTps = chain.evmChainId || chain.chainId;
+
+        // Only fetch TPS/TxCount if we have a valid numeric chain ID
+        if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+          // Add initial TPS update for each chain
+          await tpsService.updateTpsData(String(chainIdForTps));
+          // Add initial Transaction Count update for each chain
+          await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+        } else {
+          logger.debug(`Skipping TPS/TxCount fetch for chain ${chain.chainName || chain.chainId} - no valid numeric chain ID`);
+        }
       }
       logger.info(`Updated ${chains.length} chains in database`);
 
@@ -180,10 +200,17 @@ const initializeDataUpdates = async () => {
       const chains = await chainDataService.fetchChainData();
       for (const chain of chains) {
         await chainService.updateChain(chain);
-        // Add TPS update for each chain
-        await tpsService.updateTpsData(chain.chainId);
-        // Add Transaction Count update for each chain
-        await tpsService.updateCumulativeTxCount(chain.chainId);
+
+        // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
+        const chainIdForTps = chain.evmChainId || chain.chainId;
+
+        // Only fetch TPS/TxCount if we have a valid numeric chain ID
+        if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+          // Add TPS update for each chain
+          await tpsService.updateTpsData(String(chainIdForTps));
+          // Add Transaction Count update for each chain
+          await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+        }
       }
       logger.info(`[CRON] Updated ${chains.length} chains with TPS and Transaction Count data`);
     } catch (error) {
@@ -236,6 +263,19 @@ const initializeDataUpdates = async () => {
       logger.info('[CRON TELEPORTER WEEKLY] Weekly teleporter update completed');
     } catch (error) {
       logger.error('[CRON TELEPORTER WEEKLY] Weekly teleporter update failed:', error);
+    }
+  });
+
+  // Registry sync once a day at 3 AM
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      logger.info(`[CRON REGISTRY] Starting scheduled registry sync at ${new Date().toISOString()}`);
+      const registryService = require('./services/registryService');
+      const registryChains = await registryService.loadAllChains();
+      await registryService.syncToDatabase(Chain);
+      logger.info(`[CRON REGISTRY] Registry sync completed - synced ${registryChains.length} chains`);
+    } catch (error) {
+      logger.error('[CRON REGISTRY] Registry sync failed:', error);
     }
   });
 };
