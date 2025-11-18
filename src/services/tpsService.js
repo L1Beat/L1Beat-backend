@@ -245,15 +245,12 @@ class TpsService {
         .select('-_id timestamp value')
         .lean();
 
+      // Don't fetch from API during chain list requests - let cron handle it
       if (!latest) {
-        logger.info(`No TPS data found for chain ${chainId}, fetching from API...`);
-        await this.updateTpsData(chainId);
-        latest = await TPS.findOne({ chainId })
-          .sort({ timestamp: -1 })
-          .select('-_id timestamp value')
-          .lean();
+        logger.debug(`No TPS data found for chain ${chainId}, will be fetched by cron job`);
+        return null; // Return null instead of triggering slow API call
       }
-      
+
       return latest;
     } catch (error) {
       logger.error(`Error fetching latest TPS: ${error.message}`);

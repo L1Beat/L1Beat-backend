@@ -108,7 +108,7 @@ const config = {
   // Rate limiting
   rateLimit: {
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: process.env.NODE_ENV === "development" ? 1000 : 100, // Higher limit in development
+    max: process.env.NODE_ENV === "development" ? 1000 : 300, // Increased from 100 to 300 for production
     standardHeaders: true,
     legacyHeaders: false,
     // Skip client IP validation when running behind a proxy
