@@ -5,45 +5,103 @@ const tpsService = require('../services/tpsService');
 const cacheManager = require('../utils/cacheManager');
 const logger = require('../utils/logger');
 
+const SNOWPEER_BASE_URL = 'https://api.snowpeer.io/v1';
+const DEFAULT_NETWORK = 'mainnet';
+
 class ChainService {
     constructor() {
         this.lastUpdated = new Map(); // Track last update time for each chain
         this.updateInterval = 30 * 60 * 1000; // 30 minutes
     }
 
-    // Get all chains
-    async getAllChains() {
+    // Get all chains with optional filtering
+    async getAllChains(filters = {}) {
         try {
-            // Check cache first
-            const cacheKey = 'all_chains';
+            const { category, network } = filters;
+
+            // Build cache key with filters
+            const cacheKey = `all_chains_${category || 'all'}_${network || 'all'}`;
             const cachedChains = cacheManager.get(cacheKey);
             if (cachedChains) {
                 logger.debug('Returning cached chains data');
                 return cachedChains;
             }
 
-            const chains = await Chain.find();
-            
-            // Fetch latest TPS for each chain
+            // Build query
+            const query = {};
+            if (category) {
+                query.categories = category;
+            }
+            if (network) {
+                query.network = network;
+            }
+
+            const chains = await Chain.find(query);
+
+            // Helper function to fetch with timeout
+            const fetchWithTimeout = (promise, timeoutMs) => {
+                return Promise.race([
+                    promise,
+                    new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error('Timeout')), timeoutMs)
+                    )
+                ]);
+            };
+
+            // Fetch latest TPS and cumulative TX count for each chain
             const chainsWithTps = await Promise.all(chains.map(async (chain) => {
                 try {
-                    const tpsData = await tpsService.getLatestTps(chain.chainId);
+                    // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
+                    const chainIdForTps = chain.evmChainId || chain.chainId;
+
+                    // Only fetch TPS if we have a numeric chain ID
+                    if (!chainIdForTps || !/^\d+$/.test(String(chainIdForTps))) {
+                        logger.debug(`Skipping TPS fetch for chain ${chain.chainName} - no valid numeric chain ID`);
+                        return chain.toObject();
+                    }
+
+                    // Fetch TPS with 3 second timeout (don't block entire request)
+                    const tpsData = await fetchWithTimeout(
+                        tpsService.getLatestTps(String(chainIdForTps)),
+                        3000
+                    ).catch(err => {
+                        if (err.message !== 'Timeout') {
+                            logger.debug(`Error fetching TPS for chain ${chain.chainName}:`, err.message);
+                        }
+                        return null;
+                    });
+
+                    // Fetch cumulative TX count with 2 second timeout (optional, don't block)
+                    const txCountData = await fetchWithTimeout(
+                        tpsService.getLatestTxCount(String(chainIdForTps)),
+                        2000
+                    ).catch(err => {
+                        if (err.message !== 'Timeout') {
+                            logger.debug(`No cumulative TX count for chain ${chain.chainName}:`, err.message);
+                        }
+                        return null;
+                    });
+
                     return {
                         ...chain.toObject(),
                         tps: tpsData ? {
                             value: parseFloat(tpsData.value).toFixed(2),
                             timestamp: tpsData.timestamp
+                        } : null,
+                        cumulativeTxCount: txCountData ? {
+                            value: txCountData.value,
+                            timestamp: txCountData.timestamp
                         } : null
                     };
                 } catch (error) {
-                    logger.error(`Error fetching TPS for chain ${chain.chainId}:`, { error: error.message });
-                    return chain;
+                    logger.error(`Error fetching data for chain ${chain.chainId}:`, { error: error.message });
+                    return chain.toObject();
                 }
             }));
-            
+
             // Cache the result for 5 minutes
             cacheManager.set(cacheKey, chainsWithTps, config.cache.chains);
-            
+
             return chainsWithTps;
         } catch (error) {
             logger.error('Error fetching chains:', { error: error.message });
@@ -251,27 +309,132 @@ class ChainService {
                         logger.debug(`Fetched ${nextPageValidators.length} additional validators from L1Validators endpoint. Next page token: ${l1NextPageToken}`);
                     }
                 } catch (secondaryError) {
-                    logger.error(`Error fetching validators from L1Validators endpoint for subnet ${subnetId}:`, 
+                    logger.error(`Error fetching validators from L1Validators endpoint for subnet ${subnetId}:`,
                         { error: secondaryError.message });
-                    
-                    // If L1Validators endpoint also fails, try alternative validator source
+
+                    // If L1Validators endpoint also fails, try SnowPeer
+                    logger.info(`Trying SnowPeer as fallback for subnet ${subnetId}`);
+                    const snowpeerValidators = await this.fetchSnowPeerValidators(subnetId, chainId);
+
+                    if (snowpeerValidators.length > 0) {
+                        return snowpeerValidators;
+                    }
+
+                    // If SnowPeer also fails, try alternative validator source
                     return await this.fetchAlternativeValidators(chainId);
                 }
             }
 
             logger.info(`Total validators fetched for chain ${chainId}: ${allValidators.length}`);
             return allValidators;
-            
+
         } catch (error) {
             logger.error(`Error fetching validators for subnet ${subnetId}:`, { error: error.message });
-            // If any error occurs, try the alternative method
+
+            // If any error occurs, try SnowPeer first
+            logger.info(`Error occurred, trying SnowPeer as fallback for subnet ${subnetId}`);
+            const snowpeerValidators = await this.fetchSnowPeerValidators(subnetId, chainId);
+
+            if (snowpeerValidators.length > 0) {
+                return snowpeerValidators;
+            }
+
+            // If SnowPeer also fails, try the alternative method
             return await this.fetchAlternativeValidators(chainId);
+        }
+    }
+
+    /**
+     * Helper function to retry requests with exponential backoff
+     */
+    async retryRequest(requestFn, maxRetries = 3, baseDelay = 1000) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                return await requestFn();
+            } catch (error) {
+                const isRateLimited = error.response?.status === 429 ||
+                                     error.message?.includes('Too many requests');
+
+                if (isRateLimited && attempt < maxRetries) {
+                    const delay = baseDelay * Math.pow(2, attempt - 1);
+                    logger.warn(`Rate limited, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                }
+
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * Fetch validators from SnowPeer API
+     */
+    async fetchSnowPeerValidators(subnetId, chainId) {
+        if (!subnetId) return [];
+
+        try {
+            logger.info(`Fetching validators from SnowPeer for subnet ${subnetId}`);
+
+            const response = await this.retryRequest(async () => {
+                return await axios.get(`${SNOWPEER_BASE_URL}/blockchains`, {
+                    params: {
+                        network: DEFAULT_NETWORK,
+                        subnetID: subnetId
+                    },
+                    timeout: config.api?.snowpeer?.timeout || 30000,
+                });
+            });
+
+            const apiResponse = response.data;
+            const blockchains = apiResponse.blockchains || [];
+
+            // Find the blockchain matching our chainId or use the first one if there's only one
+            let blockchain = blockchains.find(b => b.blockchainID === chainId || b.chainID === chainId);
+            if (!blockchain && blockchains.length === 1) {
+                blockchain = blockchains[0];
+            }
+
+            if (!blockchain) {
+                logger.warn(`No blockchain found in SnowPeer response for subnet ${subnetId}`);
+                return [];
+            }
+
+            // Extract validators from the blockchain object
+            const validators = blockchain.validators || [];
+
+            if (validators.length === 0) {
+                logger.info(`No validators found in SnowPeer for subnet ${subnetId}`);
+                return [];
+            }
+
+            // Transform SnowPeer validator format to our schema
+            const transformedValidators = validators.map(v => ({
+                nodeId: v.nodeID || v.nodeId || '',
+                txHash: v.txID || v.txHash || '',
+                amountStaked: v.weight ? v.weight.toString() : (v.stake ? v.stake.toString() : '0'),
+                startTimestamp: v.startTime || v.startTimestamp || 0,
+                endTimestamp: v.endTime || v.endTimestamp || 0,
+                validationStatus: v.connected === false ? 'inactive' : 'active',
+                uptimePerformance: v.uptime || 100,
+                avalancheGoVersion: v.version || ''
+            }));
+
+            logger.info(`Successfully fetched ${transformedValidators.length} validators from SnowPeer for subnet ${subnetId}`);
+            return transformedValidators;
+
+        } catch (error) {
+            logger.error(`Error fetching SnowPeer validators for subnet ${subnetId}:`, {
+                error: error.message,
+                status: error.response?.status
+            });
+            return [];
         }
     }
 
     async fetchAlternativeValidators(chainId) {
         if (!chainId) return [];
-        
+
         try {
             // Get the alternative validator endpoints from configuration
             const alternativeValidatorEndpoints = config.api.alternativeValidators || {};
@@ -336,7 +499,7 @@ class ChainService {
             }
 
             logger.info(`Updating validators only for chain ${chainId}`);
-            
+
             const updatedChain = await Chain.findOneAndUpdate(
                 { chainId },
                 {
@@ -349,16 +512,62 @@ class ChainService {
             if (!updatedChain) {
                 throw new Error('Chain not found');
             }
-            
+
             // Invalidate cache for this chain
             cacheManager.delete(`chain_${chainId}`);
             cacheManager.delete('all_chains');
-            
+
             logger.info(`Updated ${updatedChain.validators.length} validators for chain ${chainId}`);
             return updatedChain;
         } catch (error) {
             logger.error(`Error updating validators for chain ${chainId}:`, { error: error.message });
             throw error;
+        }
+    }
+
+    // Get all unique categories
+    async getAllCategories() {
+        try {
+            const cacheKey = 'all_categories';
+            const cachedCategories = cacheManager.get(cacheKey);
+            if (cachedCategories) {
+                logger.debug('Returning cached categories');
+                return cachedCategories;
+            }
+
+            const categories = await Chain.distinct('categories');
+            const sortedCategories = categories.filter(cat => cat).sort();
+
+            cacheManager.set(cacheKey, sortedCategories, config.cache.chains);
+            return sortedCategories;
+        } catch (error) {
+            logger.error('Error fetching categories:', { error: error.message });
+            throw new Error(`Error fetching categories: ${error.message}`);
+        }
+    }
+
+    // Enrich chain with live Glacier data (validators, metrics)
+    async enrichChainWithGlacierData(chainData) {
+        try {
+            logger.debug(`Enriching chain ${chainData.chainName} with Glacier data`);
+
+            // Fetch validators if subnetId is available
+            let validators = [];
+            if (chainData.subnetId) {
+                validators = await this.fetchValidators(chainData.subnetId, chainData.chainId);
+            }
+
+            // Update chain with live data
+            const enrichedChain = {
+                ...chainData,
+                validators: validators,
+                lastUpdated: new Date()
+            };
+
+            return enrichedChain;
+        } catch (error) {
+            logger.error(`Error enriching chain with Glacier data:`, { error: error.message });
+            return chainData;
         }
     }
 }

@@ -19,6 +19,7 @@ const teleporterRoutes = require('./routes/teleporterRoutes');
 const logger = require('./utils/logger');
 const blogRoutes = require('./routes/blogRoutes');
 const authorRoutes = require('./routes/authorRoutes');
+const snowpeerRoutes = require('./routes/snowpeerRoutes');
 const substackService = require('./services/substackService');
 
 
@@ -104,18 +105,38 @@ const initializeDataUpdates = async () => {
   logger.info(`[${config.env}] Initializing data updates at ${new Date().toISOString()}`);
 
   try {
-    // First update chains
-    logger.info('Fetching initial chain data...');
+    // First, load the registry
+    logger.info('[REGISTRY] Loading l1-registry data...');
+    const registryService = require('./services/registryService');
+    const registryChains = await registryService.loadAllChains();
+    logger.info(`[REGISTRY] Loaded ${registryChains.length} chains from l1-registry`);
+
+    // Sync registry data to database
+    logger.info('[REGISTRY] Syncing registry data to database...');
+    await registryService.syncToDatabase(Chain);
+    logger.info('[REGISTRY] Registry sync complete');
+
+    // Then fetch and enrich with Glacier data
+    logger.info('Fetching initial chain data from Glacier...');
     const chains = await chainDataService.fetchChainData();
     logger.info(`Fetched ${chains.length} chains from Glacier API`);
 
     if (chains && chains.length > 0) {
       for (const chain of chains) {
         await chainService.updateChain(chain);
-        // Add initial TPS update for each chain
-        await tpsService.updateTpsData(chain.chainId);
-        // Add initial Transaction Count update for each chain
-        await tpsService.updateCumulativeTxCount(chain.chainId);
+
+        // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
+        const chainIdForTps = chain.evmChainId || chain.chainId;
+
+        // Only fetch TPS/TxCount if we have a valid numeric chain ID
+        if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+          // Add initial TPS update for each chain
+          await tpsService.updateTpsData(String(chainIdForTps));
+          // Add initial Transaction Count update for each chain
+          await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+        } else {
+          logger.debug(`Skipping TPS/TxCount fetch for chain ${chain.chainName || chain.chainId} - no valid numeric chain ID`);
+        }
       }
       logger.info(`Updated ${chains.length} chains in database`);
 
@@ -179,10 +200,17 @@ const initializeDataUpdates = async () => {
       const chains = await chainDataService.fetchChainData();
       for (const chain of chains) {
         await chainService.updateChain(chain);
-        // Add TPS update for each chain
-        await tpsService.updateTpsData(chain.chainId);
-        // Add Transaction Count update for each chain
-        await tpsService.updateCumulativeTxCount(chain.chainId);
+
+        // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
+        const chainIdForTps = chain.evmChainId || chain.chainId;
+
+        // Only fetch TPS/TxCount if we have a valid numeric chain ID
+        if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+          // Add TPS update for each chain
+          await tpsService.updateTpsData(String(chainIdForTps));
+          // Add Transaction Count update for each chain
+          await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+        }
       }
       logger.info(`[CRON] Updated ${chains.length} chains with TPS and Transaction Count data`);
     } catch (error) {
@@ -237,15 +265,33 @@ const initializeDataUpdates = async () => {
       logger.error('[CRON TELEPORTER WEEKLY] Weekly teleporter update failed:', error);
     }
   });
+
+  // Registry sync once a day at 3 AM
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      logger.info(`[CRON REGISTRY] Starting scheduled registry sync at ${new Date().toISOString()}`);
+      const registryService = require('./services/registryService');
+      const registryChains = await registryService.loadAllChains();
+      await registryService.syncToDatabase(Chain);
+      logger.info(`[CRON REGISTRY] Registry sync completed - synced ${registryChains.length} chains`);
+    } catch (error) {
+      logger.error('[CRON REGISTRY] Registry sync failed:', error);
+    }
+  });
 };
 
-// Call initialization after DB connection
+// Call initialization after DB connection (skip in test mode)
+const isTestMode = process.env.NODE_ENV === 'test';
 connectDB().then(async () => {
-  // First, check for and fix any stale teleporter updates
-  await fixStaleUpdates();
+  if (!isTestMode) {
+    // First, check for and fix any stale teleporter updates
+    await fixStaleUpdates();
 
-  // Then continue with normal initialization
-  initializeDataUpdates();
+    // Then continue with normal initialization
+    initializeDataUpdates();
+  } else {
+    logger.info('Skipping background data updates in test mode');
+  }
 });
 
 /**
@@ -303,6 +349,7 @@ app.use('/api', cumulativeTxCountRoutes);
 app.use('/api', teleporterRoutes);
 app.use('/api', blogRoutes);
 app.use('/api/authors', authorRoutes);
+app.use('/api/snowpeer', snowpeerRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -371,8 +418,9 @@ if (missingEnvVars.length > 0) {
 // For Vercel, we need to export the app
 module.exports = app;
 
-// Only listen if not running on Vercel
-if (!isVercel) {
+// Only listen if not running on Vercel or in test mode
+const isTest = process.env.NODE_ENV === 'test';
+if (!isVercel && !isTest) {
   const server = app.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`, {
       environment: config.env,

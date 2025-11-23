@@ -1,0 +1,3 @@
+[submodule "l1-registry"]
+	path = l1-registry
+	url = https://github.com/L1Beat/l1-registry.git
