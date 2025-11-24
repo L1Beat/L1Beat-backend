@@ -416,11 +416,18 @@ class SubstackService {
         }
       }
 
+      // Cleanup deleted articles
+      const deletedCount = await this.cleanupDeletedArticles(
+        processedPosts,
+        requestId
+      );
+
       logger.info(`[SUBSTACK SYNC] Sync completed [${requestId}]`, {
         totalPosts: processedPosts.length,
         syncedCount,
         updatedCount,
         errorCount,
+        deletedCount,
       });
 
       return {
@@ -428,6 +435,7 @@ class SubstackService {
         synced: syncedCount,
         updated: updatedCount,
         errors: errorCount,
+        deleted: deletedCount,
       };
     } catch (error) {
       logger.error(
@@ -438,6 +446,45 @@ class SubstackService {
         }
       );
       throw error;
+    }
+  }
+
+  /**
+   * Remove articles from database that no longer exist in the RSS feed
+   * @param {Array} currentPosts - Array of posts currently in RSS feed
+   * @param {string} requestId - Request ID for tracking
+   * @returns {Promise<number>} Number of deleted articles
+   */
+  async cleanupDeletedArticles(currentPosts, requestId = "unknown") {
+    try {
+      const currentSubstackIds = currentPosts.map((post) => post.substackId);
+
+      logger.info(
+        `[SUBSTACK CLEANUP] Checking for deleted articles [${requestId}]`,
+        {
+          currentArticleCount: currentSubstackIds.length,
+        }
+      );
+
+      const result = await BlogPost.deleteMany({
+        substackId: { $nin: currentSubstackIds, $exists: true },
+      });
+
+      if (result.deletedCount > 0) {
+        logger.info(
+          `[SUBSTACK CLEANUP] Removed ${result.deletedCount} deleted articles [${requestId}]`
+        );
+      }
+
+      return result.deletedCount;
+    } catch (error) {
+      logger.error(
+        `[SUBSTACK CLEANUP] Error cleaning up deleted articles [${requestId}]:`,
+        {
+          message: error.message,
+        }
+      );
+      return 0;
     }
   }
 
