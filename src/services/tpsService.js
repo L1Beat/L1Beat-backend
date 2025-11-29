@@ -85,17 +85,24 @@ class TpsService {
           logger.info(`[TPS Update] Starting update for chain ${chainId} (Attempt ${attempt}/${retryCount})`);
           
           // Use the new metrics API endpoint
+          const headers = {
+            'Accept': 'application/json',
+            'User-Agent': 'l1beat-backend',
+            'Cache-Control': 'no-cache' // Avoid cached responses
+          };
+
+          // Add API key if available
+          if (process.env.GLACIER_API_KEY) {
+            headers['x-api-key'] = process.env.GLACIER_API_KEY;
+          }
+
           const response = await axios.get(`${config.api.metrics.baseUrl}/chains/${chainId}/metrics/avgTps`, {
             params: {
               timeInterval: 'day',
               pageSize: 30
             },
             timeout: config.api.metrics.timeout,
-            headers: {
-              'Accept': 'application/json',
-              'User-Agent': 'l1beat-backend',
-              'Cache-Control': 'no-cache' // Avoid cached responses
-            }
+            headers
           });
 
           // Enhanced error logging

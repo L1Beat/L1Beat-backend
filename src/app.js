@@ -14,7 +14,19 @@ const chainService = require('./services/chainService');
 const tpsRoutes = require('./routes/tpsRoutes');
 const tpsService = require('./services/tpsService');
 const TPS = require('./models/tps');
+const activeAddressesRoutes = require('./routes/activeAddressesRoutes');
+const activeAddressesService = require('./services/activeAddressesService');
+const txCountRoutes = require('./routes/txCountRoutes');
+const txCountService = require('./services/txCountService');
+const maxTpsRoutes = require('./routes/maxTpsRoutes');
+const maxTpsService = require('./services/maxTpsService');
 const cumulativeTxCountRoutes = require('./routes/cumulativeTxCountRoutes');
+const gasUsedRoutes = require('./routes/gasUsedRoutes');
+const gasUsedService = require('./services/gasUsedService');
+const avgGasPriceRoutes = require('./routes/avgGasPriceRoutes');
+const avgGasPriceService = require('./services/avgGasPriceService');
+const feesPaidRoutes = require('./routes/feesPaidRoutes');
+const feesPaidService = require('./services/feesPaidService');
 const teleporterRoutes = require('./routes/teleporterRoutes');
 const logger = require('./utils/logger');
 const blogRoutes = require('./routes/blogRoutes');
@@ -134,6 +146,12 @@ const initializeDataUpdates = async () => {
           await tpsService.updateTpsData(String(chainIdForTps));
           // Add initial Transaction Count update for each chain
           await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+          // Add initial Gas Used update for each chain
+          await gasUsedService.updateGasUsedData(String(chainIdForTps));
+          // Add initial Average Gas Price update for each chain
+          await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
+          // Add initial Fees Paid update for each chain
+          await feesPaidService.updateFeesPaidData(String(chainIdForTps));
         } else {
           logger.debug(`Skipping TPS/TxCount fetch for chain ${chain.chainName || chain.chainId} - no valid numeric chain ID`);
         }
@@ -208,11 +226,23 @@ const initializeDataUpdates = async () => {
         if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
           // Add TPS update for each chain
           await tpsService.updateTpsData(String(chainIdForTps));
-          // Add Transaction Count update for each chain
+          // Add Max TPS update for each chain
+          await maxTpsService.updateMaxTpsData(String(chainIdForTps));
+          // Add Cumulative Transaction Count update for each chain
           await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+          // Add Daily Transaction Count update for each chain
+          await txCountService.updateTxCountData(String(chainIdForTps));
+          // Add Active Addresses update for each chain
+          await activeAddressesService.updateActiveAddressesData(String(chainIdForTps));
+          // Add Gas Used update for each chain
+          await gasUsedService.updateGasUsedData(String(chainIdForTps));
+          // Add Average Gas Price update for each chain
+          await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
+          // Add Fees Paid update for each chain
+          await feesPaidService.updateFeesPaidData(String(chainIdForTps));
         }
       }
-      logger.info(`[CRON] Updated ${chains.length} chains with TPS and Transaction Count data`);
+      logger.info(`[CRON] Updated ${chains.length} chains with TPS, Max TPS, TxCount, Active Addresses, Gas Used, Avg Gas Price, Fees Paid, and Cumulative TxCount data`);
     } catch (error) {
       logger.error('[CRON] Chain/TPS/TxCount update failed:', error);
     }
@@ -345,6 +375,12 @@ async function fixStaleUpdates() {
 // Routes
 app.use('/api', chainRoutes);
 app.use('/api', tpsRoutes);
+app.use('/api', maxTpsRoutes);
+app.use('/api', activeAddressesRoutes);
+app.use('/api', txCountRoutes);
+app.use('/api', gasUsedRoutes);
+app.use('/api', avgGasPriceRoutes);
+app.use('/api', feesPaidRoutes);
 app.use('/api', cumulativeTxCountRoutes);
 app.use('/api', teleporterRoutes);
 app.use('/api', blogRoutes);
