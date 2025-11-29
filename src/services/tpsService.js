@@ -268,7 +268,7 @@ class TpsService {
       const currentTime = Math.floor(Date.now() / 1000);
       const oneDayAgo = currentTime - (24 * 60 * 60);
 
-      // Add more detailed initial logging
+      // Log time boundaries for debugging
       logger.info('Network TPS calculation - Time boundaries:', {
         currentTime: new Date(currentTime * 1000).toISOString(),
         oneDayAgo: new Date(oneDayAgo * 1000).toISOString(),
@@ -276,21 +276,7 @@ class TpsService {
         oneDayAgoTimestamp: oneDayAgo
       });
 
-      // First get all TPS records for debugging
-      const allTpsRecords = await TPS.find({
-        timestamp: { $gte: oneDayAgo }
-      }).lean();
-
-      logger.info('All TPS records in last 24h:', {
-        count: allTpsRecords.length,
-        uniqueChains: [...new Set(allTpsRecords.map(r => r.chainId))].length,
-        timeRange: {
-          oldest: allTpsRecords.length ? new Date(Math.min(...allTpsRecords.map(r => r.timestamp * 1000))).toISOString() : null,
-          newest: allTpsRecords.length ? new Date(Math.max(...allTpsRecords.map(r => r.timestamp * 1000))).toISOString() : null
-        }
-      });
-
-      const latestTpsPromises = chains.map(chain => 
+      const latestTpsPromises = chains.map(chain =>
         TPS.findOne({ 
           chainId: chain.chainId,
           timestamp: { $gte: oneDayAgo, $lte: currentTime } // Add upper bound
@@ -664,4 +650,4 @@ class TpsService {
   }
 }
 
-module.exports = new TpsService(); 
+module.exports = new TpsService();  
