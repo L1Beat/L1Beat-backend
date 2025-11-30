@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const chainSchema = new mongoose.Schema({
     chainId: { type: String, required: true, unique: true },
+    blockchainId: { type: String, unique: true, sparse: true },
     status: String,
     chainName: String,
     description: String,
@@ -41,13 +42,45 @@ const chainSchema = new mongoose.Schema({
         value: Number,
         timestamp: Number,
         lastUpdated: Date
+    },
+    cumulativeTxCount: {
+        value: Number,
+        timestamp: Number,
+        lastUpdated: Date
+    },
+    categories: [String],
+    website: String,
+    socials: [{
+        name: String,
+        url: String
+    }],
+    network: {
+        type: String,
+        enum: ['mainnet', 'fuji', null],
+        default: null
+    },
+    evmChainId: Number,
+    rpcUrls: [String],
+    assets: [{
+        symbol: String,
+        name: String,
+        decimals: Number
+    }],
+    registryMetadata: {
+        folderName: String,
+        lastUpdated: Date,
+        source: String
     }
 });
 
 // Add indexes for better query performance
 chainSchema.index({ chainId: 1 });
+chainSchema.index({ blockchainId: 1 });
 chainSchema.index({ isTestnet: 1 });
 chainSchema.index({ status: 1 });
 chainSchema.index({ 'validators.validationStatus': 1 });
+chainSchema.index({ categories: 1 });
+chainSchema.index({ network: 1 });
+chainSchema.index({ subnetId: 1 });
 
 module.exports = mongoose.model('Chain', chainSchema);

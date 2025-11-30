@@ -35,13 +35,30 @@ const blogPostSchema = new mongoose.Schema(
     },
     author: {
       type: String,
-      default: "L1Beat Team",
+      default: "L1Beat",
     },
     authors: [
       {
         type: String,
         trim: true,
       },
+    ],
+    authorProfiles: [
+      {
+        name: { type: String, required: true },
+        slug: { type: String, required: true },
+        bio: { type: String, default: "" },
+        avatar: { type: String, default: "" },
+        socialLinks: {
+          twitter: { type: String, default: "" },
+          linkedin: { type: String, default: "" },
+          website: { type: String, default: "" },
+          github: { type: String, default: "" },
+        },
+        role: { type: String, default: "" },
+        joinDate: { type: Date, default: null },
+        isActive: { type: Boolean, default: true },
+      }
     ],
     publishedAt: {
       type: Date,
