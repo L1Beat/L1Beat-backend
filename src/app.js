@@ -112,6 +112,11 @@ app.use(cors({
 
 app.use(express.json());
 
+// Health check endpoint - MUST be before DB connection for deployment health checks
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
 // Single initialization point for data updates
 const initializeDataUpdates = async () => {
   logger.info(`[${config.env}] Initializing data updates at ${new Date().toISOString()}`);
@@ -386,11 +391,6 @@ app.use('/api', teleporterRoutes);
 app.use('/api', blogRoutes);
 app.use('/api/authors', authorRoutes);
 app.use('/api/snowpeer', snowpeerRoutes);
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
 
 // Cache status endpoint (development only)
 if (isDevelopment) {
