@@ -159,16 +159,20 @@ class SubstackService {
    */
   async fetchRSSFeed(requestId = "unknown") {
     try {
+      // Add timestamp query param to bypass CDN cache
+      const cacheBustingUrl = `${this.RSS_URL}?t=${Date.now()}`;
+
       logger.info(`[SUBSTACK RSS] Fetching RSS feed [${requestId}]`, {
         url: this.RSS_URL,
       });
 
-      const response = await axios.get(this.RSS_URL, {
+      const response = await axios.get(cacheBustingUrl, {
         timeout: this.TIMEOUT,
         headers: {
           Accept: "application/rss+xml, application/xml, text/xml",
           "User-Agent": "l1beat-blog-service",
-          "Cache-Control": "no-cache",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
         },
       });
 
