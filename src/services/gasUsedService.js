@@ -88,7 +88,7 @@ class GasUsedService {
           const response = await axios.get(`${config.api.metrics.baseUrl}/chains/${chainId}/metrics/gasUsed`, {
             params: {
               timeInterval: 'day',
-              pageSize: 30
+              pageSize: 100  // Maximum allowed by API
             },
             timeout: config.api.metrics.timeout,
             headers

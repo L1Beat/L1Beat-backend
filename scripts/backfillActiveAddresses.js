@@ -4,6 +4,7 @@ const ActiveAddresses = require('../src/models/activeAddresses');
 const Chain = require('../src/models/chain');
 const config = require('../src/config/config');
 const logger = require('../src/utils/logger');
+const getDbUri = require('./helpers/getDbUri');
 require('dotenv').config();
 
 // Rate limiter for API calls
@@ -171,9 +172,7 @@ async function backfillChainActiveAddresses(chainId, dryRun = false) {
 async function backfillAllChains(dryRun = false) {
   try {
     // Connect to database
-    const dbUri = process.env.NODE_ENV === 'production'
-      ? process.env.PROD_MONGODB_URI
-      : process.env.DEV_MONGODB_URI;
+    const dbUri = getDbUri();
 
     await mongoose.connect(dbUri);
     console.log('Connected to database\n');
