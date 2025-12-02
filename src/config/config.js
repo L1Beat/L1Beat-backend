@@ -19,7 +19,7 @@ const config = {
     uri:
       process.env.NODE_ENV === "production"
         ? process.env.PROD_MONGODB_URI
-        : process.env.DEV_MONGODB_URI,
+        : process.env.LOCAL_MONGODB_URI || process.env.DEV_MONGODB_URI,
     options: {
       useNewUrlParser: true,
       useUnifiedTopology: true,

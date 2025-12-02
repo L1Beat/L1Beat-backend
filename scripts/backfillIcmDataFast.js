@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 const axios = require('axios');
 const { TeleporterMessage } = require('../src/models/teleporterMessage');
 const teleporterService = require('../src/services/teleporterService');
+const getDbUri = require('./helpers/getDbUri');
 
 // Rate limiter for API calls (using user's high limits)
 class RateLimiter {
@@ -253,9 +254,7 @@ async function main() {
     console.log(`Checking last ${days} days for missing data\n`);
 
     // Connect to database
-    const dbUri = process.env.NODE_ENV === 'production'
-      ? process.env.PROD_MONGODB_URI
-      : process.env.DEV_MONGODB_URI;
+    const dbUri = getDbUri();
 
     await mongoose.connect(dbUri);
     console.log('✅ Connected to database\n');
