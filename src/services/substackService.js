@@ -153,9 +153,9 @@ class SubstackService {
   }
 
   /**
-   * Fetch post details from Substack API to get co-author information
+   * Fetch post details from Substack API to get co-author information with profile metadata
    * @param {string} slug - Post slug (from URL)
-   * @returns {Promise<Array<string>>} Array of co-author names
+   * @returns {Promise<Array<Object>>} Array of co-author objects with name, photo_url, bio, handle
    */
   async fetchPostAuthorsFromAPI(slug) {
     try {
@@ -175,19 +175,25 @@ class SubstackService {
 
       logger.info(`[SUBSTACK API] Response received for slug=${slug}, has publishedBylines: ${!!response.data.publishedBylines}`);
 
-      // Extract author names from publishedBylines field
+      // Extract author objects with metadata from publishedBylines field
       if (response.data && response.data.publishedBylines && Array.isArray(response.data.publishedBylines)) {
-        const authors = response.data.publishedBylines
-          .map((author) => author.name)
-          .filter((name) => name && name.length > 0);
+        const authorsWithMetadata = response.data.publishedBylines
+          .filter((author) => author.name && author.name.length > 0)
+          .map((author) => ({
+            name: author.name,
+            handle: author.handle || null,
+            photo_url: author.photo_url || null,
+            bio: author.bio || null,
+            substack_id: author.id || null
+          }));
 
         logger.info(
-          `[SUBSTACK API] Retrieved ${authors.length} co-authors for post slug=${slug}`,
-          { authors }
+          `[SUBSTACK API] Retrieved ${authorsWithMetadata.length} co-authors with metadata for post slug=${slug}`,
+          { authors: authorsWithMetadata.map(a => ({ name: a.name, has_photo: !!a.photo_url })) }
         );
 
-        if (authors.length > 0) {
-          return authors;
+        if (authorsWithMetadata.length > 0) {
+          return authorsWithMetadata;
         }
       } else {
         logger.warn(`[SUBSTACK API] No publishedBylines found in response for slug=${slug}`);
@@ -443,13 +449,16 @@ class SubstackService {
         try {
           // Try to fetch co-author information from Substack API using post slug
           let finalAuthors = postData.authors;
+          let authorMetadata = null;
           if (postData.slug) {
             const apiAuthors = await this.fetchPostAuthorsFromAPI(postData.slug);
 
             if (apiAuthors && apiAuthors.length > 0) {
-              finalAuthors = apiAuthors;
+              // Extract names for finalAuthors, store full metadata
+              authorMetadata = apiAuthors;
+              finalAuthors = apiAuthors.map(a => a.name);
               logger.info(
-                `[SUBSTACK SYNC] Updated authors from API for "${postData.title}": ${apiAuthors.join(", ")}`
+                `[SUBSTACK SYNC] Updated authors from API for "${postData.title}": ${finalAuthors.join(", ")}`
               );
             }
           }
@@ -457,8 +466,8 @@ class SubstackService {
           // Calculate reading time
           const readingTime = this.calculateReadingTime(postData.content);
 
-          // Map authors to profiles
-          const authorProfiles = await authorService.mapSubstackAuthors(finalAuthors);
+          // Map authors to profiles, passing metadata for avatar extraction
+          const authorProfiles = await authorService.mapSubstackAuthors(finalAuthors, authorMetadata);
 
           // Prepare data for database
           const dbData = {

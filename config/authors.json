@@ -27,6 +27,22 @@
       },
       "substackNames": ["Ayash Bera", "ayash bera", "Ayash", "ayash"],
       "isActive": true
+    },
+    {
+      "name": "Selim",
+      "slug": "selim",
+      "bio": "Writer at L1Beat, contributing insights on Avalanche L1s and blockchain analytics.",
+      "role": "Contributor",
+      "avatar": "",
+      "socialLinks": {
+        "twitter": "",
+        "linkedin": "",
+        "website": "",
+        "github": "",
+        "substack": "https://substack.com/@muhammetselimfe"
+      },
+      "substackNames": ["Selim", "selim", "muhammetselimfe"],
+      "isActive": true
     }
   ],
   "fallbackAuthor": {

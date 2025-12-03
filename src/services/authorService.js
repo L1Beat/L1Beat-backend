@@ -13,19 +13,30 @@ class AuthorService {
   }
 
   /**
-   * Map Substack author names to Author profiles
+   * Map Substack author names to Author profiles with optional metadata (photo_url, bio, handle)
    * @param {Array<string>} substackAuthors - Author names from Substack RSS
+   * @param {Array<Object>} substackMetadata - Optional metadata from Substack API (photo_url, bio, handle, substack_id)
    * @returns {Promise<Array<Object>>} Array of author profiles
    */
-  async mapSubstackAuthors(substackAuthors) {
+  async mapSubstackAuthors(substackAuthors, substackMetadata = null) {
     try {
       if (!substackAuthors || substackAuthors.length === 0) {
         return await this.getDefaultAuthors();
       }
 
+      // Create lookup map from metadata
+      const metadataMap = new Map();
+      if (substackMetadata && Array.isArray(substackMetadata)) {
+        substackMetadata.forEach(author => {
+          metadataMap.set(author.name.toLowerCase(), author);
+        });
+      }
+
       const authorProfiles = [];
 
       for (const authorName of substackAuthors) {
+        const metadata = metadataMap.get(authorName.toLowerCase());
+
         // Try to find existing author by name or substackNames
         let author = await Author.findOne({
           $or: [
@@ -36,8 +47,22 @@ class AuthorService {
         });
 
         if (!author) {
-          // Create a basic author profile if not found
-          author = await this.createBasicAuthorProfile(authorName);
+          // Create a basic author profile if not found, passing Substack metadata
+          author = await this.createBasicAuthorProfile(authorName, metadata);
+        } else if (metadata && metadata.photo_url && (!author.avatar || author.avatar === "")) {
+          // Update existing author's avatar if Substack has one and author doesn't
+          author.avatar = metadata.photo_url;
+          if (metadata.bio && !author.bio) {
+            author.bio = metadata.bio;
+          }
+          if (metadata.handle) {
+            // Add Substack handle to socialLinks if not present
+            if (!author.socialLinks.substack) {
+              author.socialLinks.substack = `https://substack.com/@${metadata.handle}`;
+            }
+          }
+          await author.save();
+          logger.info(`[AUTHOR SERVICE] Updated author ${authorName} with Substack metadata (avatar, bio, handle)`);
         }
 
         if (author) {
@@ -57,9 +82,10 @@ class AuthorService {
   /**
    * Create a basic author profile for unknown authors
    * @param {string} authorName - Author name from Substack
+   * @param {Object} substackMetadata - Optional metadata from Substack API (photo_url, bio, handle, substack_id)
    * @returns {Promise<Object|null>} Created author or null
    */
-  async createBasicAuthorProfile(authorName) {
+  async createBasicAuthorProfile(authorName, substackMetadata = null) {
     try {
       const slug = authorName
         .toLowerCase()
@@ -74,20 +100,31 @@ class AuthorService {
         return existingAuthor;
       }
 
-      // Generate potential Substack profile URL
-      const substackSlug = slug.replace(/[^a-z0-9-]/g, "");
-      const substackUrl = substackSlug
-        ? `https://${substackSlug}.substack.com`
-        : "";
+      // Use Substack metadata if available, otherwise generate URL from slug
+      let substackUrl = "";
+      let avatar = "";
+      let bio = "";
+
+      if (substackMetadata) {
+        avatar = substackMetadata.photo_url || "";
+        bio = substackMetadata.bio || "";
+        if (substackMetadata.handle) {
+          substackUrl = `https://substack.com/@${substackMetadata.handle}`;
+        }
+      } else {
+        // Generate potential Substack profile URL from slug as fallback
+        const substackSlug = slug.replace(/[^a-z0-9-]/g, "");
+        substackUrl = substackSlug ? `https://${substackSlug}.substack.com` : "";
+      }
 
       // Use defaults from JSON configuration
       const defaults = authorsConfig.autoCreateDefaults;
-      
+
       const author = new Author({
         name: authorName,
         slug: slug,
-        bio: defaults.bio,
-        avatar: "", // Will use default avatar in frontend
+        bio: bio || defaults.bio,
+        avatar: avatar, // Use Substack photo_url if available, otherwise empty
         role: defaults.role,
         substackNames: [authorName],
         socialLinks: {
@@ -98,7 +135,11 @@ class AuthorService {
       });
 
       await author.save();
-      logger.info(`Created basic author profile for: ${authorName}`);
+      logger.info(`Created basic author profile for: ${authorName}`, {
+        hasAvatar: !!avatar,
+        hasBio: !!bio,
+        hasSubstackUrl: !!substackUrl
+      });
       return author;
     } catch (error) {
       logger.error(
