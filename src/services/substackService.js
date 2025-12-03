@@ -445,6 +445,7 @@ class SubstackService {
           let finalAuthors = postData.authors;
           if (postData.slug) {
             const apiAuthors = await this.fetchPostAuthorsFromAPI(postData.slug);
+
             if (apiAuthors && apiAuthors.length > 0) {
               finalAuthors = apiAuthors;
               logger.info(
