@@ -37,11 +37,11 @@ class AuthorService {
       for (const authorName of substackAuthors) {
         const metadata = metadataMap.get(authorName.toLowerCase());
 
-        // Try to find existing author by name or substackNames
+        // Try to find existing author by name or substackNames (case-insensitive)
         let author = await Author.findOne({
           $or: [
             { name: { $regex: new RegExp(`^${authorName}$`, "i") } },
-            { substackNames: { $in: [authorName] } },
+            { substackNames: { $elemMatch: { $regex: new RegExp(`^${authorName}$`, "i") } } },
           ],
           isActive: true,
         });
@@ -49,20 +49,33 @@ class AuthorService {
         if (!author) {
           // Create a basic author profile if not found, passing Substack metadata
           author = await this.createBasicAuthorProfile(authorName, metadata);
-        } else if (metadata && metadata.photo_url && (!author.avatar || author.avatar === "")) {
-          // Update existing author's avatar if Substack has one and author doesn't
-          author.avatar = metadata.photo_url;
+        } else if (metadata) {
+          // Update existing author with Substack metadata
+          let hasUpdate = false;
+
+          // Update avatar if Substack has one and current avatar is generic placeholder
+          if (metadata.photo_url && author.avatar === "https://i.postimg.cc/zXb7Q9Yd/ggggg.png") {
+            author.avatar = metadata.photo_url;
+            hasUpdate = true;
+            logger.debug(`[AUTHOR SERVICE] Updated avatar for ${authorName} from generic placeholder to Substack photo`);
+          }
+
+          // Update bio if Substack has one and author doesn't
           if (metadata.bio && !author.bio) {
             author.bio = metadata.bio;
+            hasUpdate = true;
           }
-          if (metadata.handle) {
-            // Add Substack handle to socialLinks if not present
-            if (!author.socialLinks.substack) {
-              author.socialLinks.substack = `https://substack.com/@${metadata.handle}`;
-            }
+
+          // Add Substack handle to socialLinks if not present
+          if (metadata.handle && !author.socialLinks.substack) {
+            author.socialLinks.substack = `https://substack.com/@${metadata.handle}`;
+            hasUpdate = true;
           }
-          await author.save();
-          logger.info(`[AUTHOR SERVICE] Updated author ${authorName} with Substack metadata (avatar, bio, handle)`);
+
+          if (hasUpdate) {
+            await author.save();
+            logger.info(`[AUTHOR SERVICE] Updated author ${authorName} with Substack metadata`);
+          }
         }
 
         if (author) {

@@ -54,6 +54,7 @@ const blogPostSchema = new mongoose.Schema(
           linkedin: { type: String, default: "" },
           website: { type: String, default: "" },
           github: { type: String, default: "" },
+          substack: { type: String, default: "" },
         },
         role: { type: String, default: "" },
         joinDate: { type: Date, default: null },

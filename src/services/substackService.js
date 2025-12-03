@@ -469,6 +469,9 @@ class SubstackService {
           // Map authors to profiles, passing metadata for avatar extraction
           const authorProfiles = await authorService.mapSubstackAuthors(finalAuthors, authorMetadata);
 
+          // Extract author names from profiles for consistency
+          const profileNames = authorProfiles.map(profile => profile.name);
+
           // Prepare data for database
           const dbData = {
             ...postData,
@@ -478,8 +481,8 @@ class SubstackService {
             // Ensure new fields have defaults
             subtitle: postData.subtitle || "",
             mainContent: postData.mainContent || postData.content,
-            authors: finalAuthors || ["L1Beat"], // Use authors from API or RSS
-            author: finalAuthors ? finalAuthors[0] : "L1Beat", // Keep for compatibility
+            authors: profileNames.length > 0 ? profileNames : ["L1Beat"], // Use mapped author names from profiles
+            author: profileNames.length > 0 ? profileNames[0] : "L1Beat", // Keep for compatibility
             authorProfiles: authorProfiles, // NEW: Add mapped author profiles
           };
 
