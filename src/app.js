@@ -134,45 +134,56 @@ const initializeDataUpdates = async () => {
     await registryService.syncToDatabase(Chain);
     logger.info('[REGISTRY] Registry sync complete');
 
-    // Then fetch and enrich with Glacier data
-    logger.info('Fetching initial chain data from Glacier...');
-    const chains = await chainDataService.fetchChainData();
-    logger.info(`Fetched ${chains.length} chains from Glacier API`);
+    // Fetch validators from Glacier for registry chains
+    logger.info('[GLACIER] Fetching validators for registry chains...');
+    const dbChains = await Chain.find({ 'registryMetadata.source': 'l1-registry' });
+    logger.info(`[GLACIER] Found ${dbChains.length} registry chains to update validators for`);
 
-    if (chains && chains.length > 0) {
-      for (const chain of chains) {
-        await chainService.updateChain(chain);
+    for (const dbChain of dbChains) {
+      try {
+        // Only fetch validators, don't update chain metadata
+        if (dbChain.subnetId) {
+          logger.debug(`[GLACIER] Fetching validators for ${dbChain.chainName} (${dbChain.chainId})`);
+          const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.chainId);
 
-        // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
-        const chainIdForTps = chain.evmChainId || chain.chainId;
+          if (validators && validators.length > 0) {
+            await chainService.updateValidatorsOnly(dbChain.chainId, validators);
+            logger.info(`[GLACIER] Updated ${validators.length} validators for ${dbChain.chainName}`);
+          }
+        }
 
-        // Only fetch TPS/TxCount if we have a valid numeric chain ID
+        // Fetch TPS and metrics if evmChainId is available
+        const chainIdForTps = dbChain.evmChainId;
         if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-          // Add initial TPS update for each chain
+          logger.debug(`[METRICS] Fetching metrics for ${dbChain.chainName} (evmChainId: ${chainIdForTps})`);
+
+          // Add initial TPS update
           await tpsService.updateTpsData(String(chainIdForTps));
-          // Add initial Transaction Count update for each chain
+          // Add initial Transaction Count update
           await tpsService.updateCumulativeTxCount(String(chainIdForTps));
-          // Add initial Gas Used update for each chain
+          // Add initial Gas Used update
           await gasUsedService.updateGasUsedData(String(chainIdForTps));
-          // Add initial Average Gas Price update for each chain
+          // Add initial Average Gas Price update
           await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
-          // Add initial Fees Paid update for each chain
+          // Add initial Fees Paid update
           await feesPaidService.updateFeesPaidData(String(chainIdForTps));
         } else {
-          logger.debug(`Skipping TPS/TxCount fetch for chain ${chain.chainName || chain.chainId} - no valid numeric chain ID`);
+          logger.debug(`Skipping TPS/TxCount fetch for chain ${dbChain.chainName} - no valid numeric evmChainId`);
         }
+      } catch (error) {
+        logger.error(`[GLACIER] Error updating validators/metrics for ${dbChain.chainName}:`, {
+          message: error.message,
+          chainId: dbChain.chainId
+        });
       }
-      logger.info(`Updated ${chains.length} chains in database`);
-
-      // Verify chains were saved
-      const savedChains = await Chain.find();
-      logger.info('Chains in database:', {
-        count: savedChains.length,
-        chainIds: savedChains.map(c => c.chainId)
-      });
-    } else {
-      logger.error('No chains fetched from Glacier API');
     }
+
+    // Verify chains were saved
+    const savedChains = await Chain.find();
+    logger.info('Chains in database:', {
+      count: savedChains.length,
+      registryChains: savedChains.filter(c => c.registryMetadata?.source === 'l1-registry').length
+    });
 
     // Initialize default authors from config
     logger.info('[AUTHOR INIT] Initializing default authors...');
@@ -230,37 +241,54 @@ const initializeDataUpdates = async () => {
   // Chain and TPS updates every hour
   cron.schedule(config.cron.chainUpdate, async () => {
     try {
-      logger.info(`[CRON] Starting scheduled chain update at ${new Date().toISOString()}`);
-      const chains = await chainDataService.fetchChainData();
-      for (const chain of chains) {
-        await chainService.updateChain(chain);
+      logger.info(`[CRON] Starting scheduled validator and metrics update at ${new Date().toISOString()}`);
 
-        // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
-        const chainIdForTps = chain.evmChainId || chain.chainId;
+      // Fetch registry chains from database
+      const dbChains = await Chain.find({ 'registryMetadata.source': 'l1-registry' });
+      logger.info(`[CRON] Found ${dbChains.length} registry chains to update`);
 
-        // Only fetch TPS/TxCount if we have a valid numeric chain ID
-        if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-          // Add TPS update for each chain
-          await tpsService.updateTpsData(String(chainIdForTps));
-          // Add Max TPS update for each chain
-          await maxTpsService.updateMaxTpsData(String(chainIdForTps));
-          // Add Cumulative Transaction Count update for each chain
-          await tpsService.updateCumulativeTxCount(String(chainIdForTps));
-          // Add Daily Transaction Count update for each chain
-          await txCountService.updateTxCountData(String(chainIdForTps));
-          // Add Active Addresses update for each chain
-          await activeAddressesService.updateActiveAddressesData(String(chainIdForTps));
-          // Add Gas Used update for each chain
-          await gasUsedService.updateGasUsedData(String(chainIdForTps));
-          // Add Average Gas Price update for each chain
-          await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
-          // Add Fees Paid update for each chain
-          await feesPaidService.updateFeesPaidData(String(chainIdForTps));
+      for (const dbChain of dbChains) {
+        try {
+          // Only fetch validators from Glacier, don't update chain metadata
+          if (dbChain.subnetId) {
+            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.chainId);
+
+            if (validators && validators.length > 0) {
+              await chainService.updateValidatorsOnly(dbChain.chainId, validators);
+            }
+          }
+
+          // Fetch TPS and metrics if evmChainId is available
+          const chainIdForTps = dbChain.evmChainId;
+          if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+            // Add TPS update for each chain
+            await tpsService.updateTpsData(String(chainIdForTps));
+            // Add Max TPS update for each chain
+            await maxTpsService.updateMaxTpsData(String(chainIdForTps));
+            // Add Cumulative Transaction Count update for each chain
+            await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+            // Add Daily Transaction Count update for each chain
+            await txCountService.updateTxCountData(String(chainIdForTps));
+            // Add Active Addresses update for each chain
+            await activeAddressesService.updateActiveAddressesData(String(chainIdForTps));
+            // Add Gas Used update for each chain
+            await gasUsedService.updateGasUsedData(String(chainIdForTps));
+            // Add Average Gas Price update for each chain
+            await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
+            // Add Fees Paid update for each chain
+            await feesPaidService.updateFeesPaidData(String(chainIdForTps));
+          }
+        } catch (error) {
+          logger.error(`[CRON] Error updating ${dbChain.chainName}:`, {
+            message: error.message,
+            chainId: dbChain.chainId
+          });
         }
       }
-      logger.info(`[CRON] Updated ${chains.length} chains with TPS, Max TPS, TxCount, Active Addresses, Gas Used, Avg Gas Price, Fees Paid, and Cumulative TxCount data`);
+
+      logger.info(`[CRON] Updated ${dbChains.length} chains with validators, TPS, Max TPS, TxCount, Active Addresses, Gas Used, Avg Gas Price, and Fees Paid data`);
     } catch (error) {
-      logger.error('[CRON] Chain/TPS/TxCount update failed:', error);
+      logger.error('[CRON] Validator/Metrics update failed:', error);
     }
   });
 
