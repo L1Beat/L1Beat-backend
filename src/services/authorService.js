@@ -222,7 +222,13 @@ class AuthorService {
 
         if (existingAuthor) {
           // Update existing author with config data
-          Object.assign(existingAuthor, authorConfig);
+          existingAuthor.slug = authorConfig.slug;
+          existingAuthor.bio = authorConfig.bio;
+          existingAuthor.avatar = authorConfig.avatar;
+          existingAuthor.role = authorConfig.role;
+          existingAuthor.substackNames = authorConfig.substackNames;
+          existingAuthor.socialLinks = authorConfig.socialLinks;
+          existingAuthor.isActive = authorConfig.isActive;
           await existingAuthor.save();
           logger.info(`[AUTHOR SERVICE] Updated existing author: ${authorConfig.name}`);
           authors.push(existingAuthor);

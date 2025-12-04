@@ -31,6 +31,7 @@ const teleporterRoutes = require('./routes/teleporterRoutes');
 const logger = require('./utils/logger');
 const blogRoutes = require('./routes/blogRoutes');
 const authorRoutes = require('./routes/authorRoutes');
+const authorService = require('./services/authorService');
 const snowpeerRoutes = require('./routes/snowpeerRoutes');
 const substackService = require('./services/substackService');
 
