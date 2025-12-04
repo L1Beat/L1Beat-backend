@@ -21,7 +21,7 @@ exports.getAllPosts = async (req, res) => {
             .sort({ publishedAt: -1 })
             .limit(parseInt(limit))
             .skip(parseInt(offset))
-            .select('-content') // Exclude full content for list view
+            .select('-content') // Exclude full content for list view, but keep authors and authorProfiles
             .lean();
 
         // Get total count for pagination
@@ -138,6 +138,8 @@ exports.getRelatedPosts = async (req, res) => {
                     excerpt: 1,
                     publishedAt: 1,
                     author: 1,
+                    authors: 1,
+                    authorProfiles: 1,
                     tags: 1,
                     imageUrl: 1,
                     readTime: 1,

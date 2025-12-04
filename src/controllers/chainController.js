@@ -11,13 +11,20 @@ exports.getAllChains = async (req, res) => {
 
         const chains = await chainService.getAllChains(filters);
 
-        console.log('Chains fetched:', {
-            count: chains?.length || 0,
-            firstChain: chains?.[0] ? chains[0].chainId : null,
-            filters
+        // Permanently exclude X-Chain and P-Chain
+        const filteredChains = chains.filter(chain => {
+            const name = (chain.chainName || '').toLowerCase();
+            return !name.includes('x-chain') && !name.includes('p-chain');
         });
 
-        res.json(chains || []);
+        console.log('Chains fetched:', {
+            count: filteredChains?.length || 0,
+            firstChain: filteredChains?.[0] ? filteredChains[0].chainId : null,
+            filters,
+            excluded: chains.length - filteredChains.length
+        });
+
+        res.json(filteredChains || []);
     } catch (error) {
         console.error('Error in getAllChains:', error);
         res.status(500).json({

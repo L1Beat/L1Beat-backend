@@ -153,6 +153,79 @@ class SubstackService {
   }
 
   /**
+   * Fetch post details from Substack API to get co-author information with profile metadata
+   * @param {string} slug - Post slug (from URL)
+   * @returns {Promise<Array<Object>>} Array of co-author objects with name, photo_url, bio, handle
+   */
+  async fetchPostAuthorsFromAPI(slug) {
+    try {
+      logger.info(`[SUBSTACK API] Fetching co-authors for slug: ${slug}`);
+
+      // Fetch from Substack API using slug to get publishedBylines
+      const response = await axios.get(
+        `https://l1beat.substack.com/api/v1/posts/${slug}`,
+        {
+          timeout: 10000,
+          headers: {
+            Accept: "application/json",
+            "User-Agent": "l1beat-blog-service",
+          },
+        }
+      );
+
+      logger.info(`[SUBSTACK API] Response received for slug=${slug}, has publishedBylines: ${!!response.data.publishedBylines}`);
+
+      // Extract author objects with metadata from publishedBylines field
+      if (response.data && response.data.publishedBylines && Array.isArray(response.data.publishedBylines)) {
+        const authorsWithMetadata = response.data.publishedBylines
+          .filter((author) => author.name && author.name.length > 0)
+          .map((author) => ({
+            name: author.name,
+            handle: author.handle || null,
+            photo_url: author.photo_url || null,
+            bio: author.bio || null,
+            substack_id: author.id || null
+          }));
+
+        logger.info(
+          `[SUBSTACK API] Retrieved ${authorsWithMetadata.length} co-authors with metadata for post slug=${slug}`,
+          { authors: authorsWithMetadata.map(a => ({ name: a.name, has_photo: !!a.photo_url })) }
+        );
+
+        if (authorsWithMetadata.length > 0) {
+          return authorsWithMetadata;
+        }
+      } else {
+        logger.warn(`[SUBSTACK API] No publishedBylines found in response for slug=${slug}`);
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(
+        `[SUBSTACK API] Error fetching post details for slug=${slug}`,
+        { message: error.message, code: error.code }
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Extract post ID from Substack URL
+   * @param {string} url - Post URL
+   * @returns {string|null} Post ID or null
+   */
+  extractPostIdFromURL(url) {
+    try {
+      // Substack URLs have format: https://l1beat.substack.com/p/{slug}?{params}
+      // Post ID may be in URL params or we need to fetch it
+      // For now, return null and rely on RSS data
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
    * Fetch RSS feed from Substack
    * @param {string} requestId - Request ID for tracking
    * @returns {Promise<Object>} Parsed RSS data
@@ -236,8 +309,12 @@ class SubstackService {
             const link = item.link || item.guid;
             const pubDate = new Date(item.pubDate);
 
-            // Generate slug from title
-            const slug = this.generateSlug(title);
+            // Extract slug from URL (e.g., https://l1beat.substack.com/p/slug-here?...)
+            let slug = this.extractSlugFromURL(link);
+            if (!slug) {
+              // Fallback: generate slug from title if extraction fails
+              slug = this.generateSlug(title);
+            }
 
             // Extract authors from RSS item
             const authors = this.extractAuthorsFromRSS(item);
@@ -370,11 +447,30 @@ class SubstackService {
       // Sync each post
       for (const postData of processedPosts) {
         try {
+          // Try to fetch co-author information from Substack API using post slug
+          let finalAuthors = postData.authors;
+          let authorMetadata = null;
+          if (postData.slug) {
+            const apiAuthors = await this.fetchPostAuthorsFromAPI(postData.slug);
+
+            if (apiAuthors && apiAuthors.length > 0) {
+              // Extract names for finalAuthors, store full metadata
+              authorMetadata = apiAuthors;
+              finalAuthors = apiAuthors.map(a => a.name);
+              logger.info(
+                `[SUBSTACK SYNC] Updated authors from API for "${postData.title}": ${finalAuthors.join(", ")}`
+              );
+            }
+          }
+
           // Calculate reading time
           const readingTime = this.calculateReadingTime(postData.content);
 
-          // Map authors to profiles
-          const authorProfiles = await authorService.mapSubstackAuthors(postData.authors);
+          // Map authors to profiles, passing metadata for avatar extraction
+          const authorProfiles = await authorService.mapSubstackAuthors(finalAuthors, authorMetadata);
+
+          // Extract author names from profiles for consistency
+          const profileNames = authorProfiles.map(profile => profile.name);
 
           // Prepare data for database
           const dbData = {
@@ -385,8 +481,8 @@ class SubstackService {
             // Ensure new fields have defaults
             subtitle: postData.subtitle || "",
             mainContent: postData.mainContent || postData.content,
-            authors: postData.authors || ["L1Beat"], // UPDATED: Ensure authors array
-            author: postData.authors ? postData.authors[0] : "L1Beat", // Keep for compatibility
+            authors: profileNames.length > 0 ? profileNames : ["L1Beat"], // Use mapped author names from profiles
+            author: profileNames.length > 0 ? profileNames[0] : "L1Beat", // Keep for compatibility
             authorProfiles: authorProfiles, // NEW: Add mapped author profiles
           };
 
@@ -409,7 +505,7 @@ class SubstackService {
           logger.debug(
             `[SUBSTACK SYNC] Synced post: ${
               postData.title
-            } [${requestId}] - Authors: ${postData.authors.join(", ")}`
+            } [${requestId}] - Authors: ${finalAuthors.join(", ")}`
           );
         } catch (postError) {
           errorCount++;
@@ -493,6 +589,26 @@ class SubstackService {
   }
 
   // Rest of the existing helper methods remain the same
+  /**
+   * Extract slug from Substack URL
+   * @param {string} url - URL like https://l1beat.substack.com/p/slug-here or https://l1beat.substack.com/p/slug-here?param=value
+   * @returns {string|null} Slug or null if not found
+   */
+  extractSlugFromURL(url) {
+    try {
+      if (!url) return null;
+
+      // Match pattern: /p/slug-here or /p/slug-here?
+      const match = url.match(/\/p\/([^/?]+)/);
+      if (match && match[1]) {
+        return match[1];
+      }
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
   generateSlug(title) {
     return title
       .toLowerCase()

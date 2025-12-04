@@ -31,6 +31,7 @@ const teleporterRoutes = require('./routes/teleporterRoutes');
 const logger = require('./utils/logger');
 const blogRoutes = require('./routes/blogRoutes');
 const authorRoutes = require('./routes/authorRoutes');
+const authorService = require('./services/authorService');
 const snowpeerRoutes = require('./routes/snowpeerRoutes');
 const substackService = require('./services/substackService');
 
@@ -173,19 +174,29 @@ const initializeDataUpdates = async () => {
       logger.error('No chains fetched from Glacier API');
     }
 
+    // Initialize default authors from config
+    logger.info('[AUTHOR INIT] Initializing default authors...');
+    try {
+      await authorService.initializeDefaultAuthors();
+      logger.info('[AUTHOR INIT] Default authors initialization completed');
+    } catch (error) {
+      logger.error('[AUTHOR INIT] Error initializing default authors:', {
+        message: error.message,
+        stack: error.stack
+      });
+    }
+
     // Initial blog sync
     logger.info('[BLOG INIT] Updating initial blog data...');
-    (async () => {
-      try {
-        await substackService.syncArticles('initial-sync');
-        logger.info('[BLOG INIT] Blog data initialization completed');
-      } catch (error) {
-        logger.error('[BLOG INIT] Error initializing blog data:', {
-          message: error.message,
-          stack: error.stack
-        });
-      }
-    })();
+    try {
+      await substackService.syncArticles('initial-sync');
+      logger.info('[BLOG INIT] Blog data initialization completed');
+    } catch (error) {
+      logger.error('[BLOG INIT] Error initializing blog data:', {
+        message: error.message,
+        stack: error.stack
+      });
+    }
 
     // Initial teleporter data update
     logger.info('[TELEPORTER INIT] Updating initial daily teleporter data...');

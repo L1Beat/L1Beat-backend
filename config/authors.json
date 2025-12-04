@@ -5,7 +5,7 @@
       "slug": "l1beat",
       "bio": "L1Beat provides comprehensive analytics and insights for Avalanche L1 ecosystems, delivering real-time data and analysis to help developers and investors navigate the growing L1 landscape.",
       "role": "Publisher",
-      "avatar": "https://i.postimg.cc/zXb7Q9Yd/ggggg.png",
+      "avatar": "https://substack-post-media.s3.amazonaws.com/public/images/57f2c5dc-494c-47e7-ad4a-e81f7700a405_1024x1024.png",
       "socialLinks": {
         "website": "https://l1beat.io",
         "twitter": "https://x.com/l1beat_io",
@@ -15,17 +15,33 @@
       "isActive": true
     },
     {
-      "name": "Ayash Bera",
-      "slug": "ayash-bera",
+      "name": "Ayash",
+      "slug": "ayash",
       "bio": "Blockchain analyst and researcher with expertise in Avalanche ecosystem development. Focuses on L1 performance metrics and validator analytics.",
       "role": "Developer",
-      "avatar": "https://i.postimg.cc/zXb7Q9Yd/ggggg.png",
+      "avatar": "https://substack-post-media.s3.amazonaws.com/public/images/0f6d7ec8-7024-4124-ab18-1192fe1fc035_144x144.png",
       "socialLinks": {
         "twitter": "https://x.com/ayashtwtt",
         "website": "https://ayashbera.me",
         "substack": "https://substack.com/@ayash2"
       },
       "substackNames": ["Ayash Bera", "ayash bera", "Ayash", "ayash"],
+      "isActive": true
+    },
+    {
+      "name": "Selim",
+      "slug": "selim",
+      "bio": "Writer at L1Beat, contributing insights on Avalanche L1s and blockchain analytics.",
+      "role": "Contributor",
+      "avatar": "https://substack-post-media.s3.amazonaws.com/public/images/71e05ae7-3331-49cb-b5c4-c10bd47ecd95_1024x1022.jpeg",
+      "socialLinks": {
+        "twitter": "https://x.com/muhammetselimfe",
+        "linkedin": "",
+        "website": "",
+        "github": "",
+        "substack": "https://substack.com/@muhammetselimfe"
+      },
+      "substackNames": ["Selim", "selim", "muhammetselimfe"],
       "isActive": true
     }
   ],
@@ -34,7 +50,7 @@
     "slug": "l1beat",
     "bio": "L1Beat provides comprehensive analytics and insights for Avalanche L1 ecosystems.",
     "role": "Publisher",
-    "avatar": "https://i.postimg.cc/zXb7Q9Yd/ggggg.png",
+    "avatar": "https://substack-post-media.s3.amazonaws.com/public/images/57f2c5dc-494c-47e7-ad4a-e81f7700a405_1024x1024.png",
     "socialLinks": {
       "twitter": "https://x.com/l1beat_io",
       "website": "https://www.l1beat.io",
