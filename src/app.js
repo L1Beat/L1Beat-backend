@@ -175,31 +175,27 @@ const initializeDataUpdates = async () => {
 
     // Initialize default authors from config
     logger.info('[AUTHOR INIT] Initializing default authors...');
-    (async () => {
-      try {
-        await authorService.initializeDefaultAuthors();
-        logger.info('[AUTHOR INIT] Default authors initialization completed');
-      } catch (error) {
-        logger.error('[AUTHOR INIT] Error initializing default authors:', {
-          message: error.message,
-          stack: error.stack
-        });
-      }
-    })();
+    try {
+      await authorService.initializeDefaultAuthors();
+      logger.info('[AUTHOR INIT] Default authors initialization completed');
+    } catch (error) {
+      logger.error('[AUTHOR INIT] Error initializing default authors:', {
+        message: error.message,
+        stack: error.stack
+      });
+    }
 
     // Initial blog sync
     logger.info('[BLOG INIT] Updating initial blog data...');
-    (async () => {
-      try {
-        await substackService.syncArticles('initial-sync');
-        logger.info('[BLOG INIT] Blog data initialization completed');
-      } catch (error) {
-        logger.error('[BLOG INIT] Error initializing blog data:', {
-          message: error.message,
-          stack: error.stack
-        });
-      }
-    })();
+    try {
+      await substackService.syncArticles('initial-sync');
+      logger.info('[BLOG INIT] Blog data initialization completed');
+    } catch (error) {
+      logger.error('[BLOG INIT] Error initializing blog data:', {
+        message: error.message,
+        stack: error.stack
+      });
+    }
 
     // Initial teleporter data update
     logger.info('[TELEPORTER INIT] Updating initial daily teleporter data...');
