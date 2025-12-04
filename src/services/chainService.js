@@ -109,28 +109,28 @@ class ChainService {
         }
     }
 
-    // Get chain by ID
-    async getChainById(chainId) {
+    // Get chain by subnet ID
+    async getChainBySubnetId(subnetId) {
         try {
             // Check cache first
-            const cacheKey = `chain_${chainId}`;
+            const cacheKey = `chain_${subnetId}`;
             const cachedChain = cacheManager.get(cacheKey);
             if (cachedChain) {
-                logger.debug(`Returning cached data for chain ${chainId}`);
+                logger.debug(`Returning cached data for chain ${subnetId}`);
                 return cachedChain;
             }
 
-            const chain = await Chain.findOne({ chainId });
+            const chain = await Chain.findOne({ subnetId });
             if (!chain) {
                 throw new Error('Chain not found');
             }
-            
+
             // Cache the result for 5 minutes
             cacheManager.set(cacheKey, chain, config.cache.chains);
-            
+
             return chain;
         } catch (error) {
-            logger.error(`Error fetching chain ${chainId}:`, { error: error.message });
+            logger.error(`Error fetching chain ${subnetId}:`, { error: error.message });
             throw new Error(`Error fetching chain: ${error.message}`);
         }
     }
@@ -492,16 +492,16 @@ class ChainService {
     }
 
     // Update only the validators for a specific chain
-    async updateValidatorsOnly(chainId, validators) {
+    async updateValidatorsOnly(subnetId, validators) {
         try {
-            if (!chainId) {
-                throw new Error('Chain ID is required');
+            if (!subnetId) {
+                throw new Error('Subnet ID is required');
             }
 
-            logger.info(`Updating validators only for chain ${chainId}`);
+            logger.info(`Updating validators only for chain with subnetId ${subnetId}`);
 
             const updatedChain = await Chain.findOneAndUpdate(
-                { chainId },
+                { subnetId },
                 {
                     validators,
                     lastUpdated: new Date()
@@ -514,13 +514,13 @@ class ChainService {
             }
 
             // Invalidate cache for this chain
-            cacheManager.delete(`chain_${chainId}`);
+            cacheManager.delete(`chain_${subnetId}`);
             cacheManager.delete('all_chains');
 
-            logger.info(`Updated ${updatedChain.validators.length} validators for chain ${chainId}`);
+            logger.info(`Updated ${updatedChain.validators.length} validators for chain ${updatedChain.chainName} (subnetId: ${subnetId})`);
             return updatedChain;
         } catch (error) {
-            logger.error(`Error updating validators for chain ${chainId}:`, { error: error.message });
+            logger.error(`Error updating validators for chain ${subnetId}:`, { error: error.message });
             throw error;
         }
     }

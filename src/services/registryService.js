@@ -71,13 +71,12 @@ class RegistryService {
 
     for (const chainData of registryData.chains) {
       const parsed = {
-        chainId: chainData.blockchainId,
+        subnetId: registryData.subnetId,
         blockchainId: chainData.blockchainId,
         chainName: chainData.name || registryData.name,
         chainLogoUri: registryData.logo,
         description: chainData.description || registryData.description,
 
-        subnetId: registryData.subnetId,
         platformChainId: chainData.blockchainId,
 
         categories: registryData.categories || [],
@@ -150,126 +149,41 @@ class RegistryService {
 
       for (const chainData of this.chains) {
         try {
-          // Find existing Glacier chain to merge into
-          // Glacier chains use numeric chainId (e.g., "43114") but don't have evmChainId field
-          // Registry chains have evmChainId that matches Glacier's chainId
-          let existingChain = null;
+          // Upsert chain by subnetId (our unique identifier)
+          await Chain.findOneAndUpdate(
+            { subnetId: chainData.subnetId },
+            {
+              $set: {
+                subnetId: chainData.subnetId,
+                blockchainId: chainData.blockchainId,
+                chainName: chainData.chainName,
+                chainLogoUri: chainData.chainLogoUri,
+                description: chainData.description,
+                platformChainId: chainData.platformChainId,
 
-          if (chainData.evmChainId) {
-            // Look for Glacier chain where chainId matches registry's evmChainId
-            // AND chain doesn't already have blockchainId (meaning it's a pure Glacier chain)
-            existingChain = await Chain.findOne({
-              chainId: String(chainData.evmChainId),
-              blockchainId: { $exists: false }
-            });
-          }
+                categories: chainData.categories,
+                website: chainData.website,
+                socials: chainData.socials,
+                network: chainData.network,
 
-          // If no match by evmChainId->chainId, try blockchainId for registry-only chains
-          if (!existingChain) {
-            existingChain = await Chain.findOne({
-              blockchainId: chainData.blockchainId
-            });
-          }
+                evmChainId: chainData.evmChainId,
+                vmName: chainData.vmName,
+                vmId: chainData.vmId,
 
-          if (existingChain) {
-            // Debug logging for C-Chain
-            if (chainData.chainName === 'C-Chain') {
-              logger.info(`[DEBUG] Merging C-Chain:`, {
-                existingChainId: existingChain.chainId,
-                registryEvmChainId: chainData.evmChainId,
-                registryCategories: chainData.categories,
-                registryNetwork: chainData.network,
-                registryRpcUrls: chainData.rpcUrls
-              });
-            }
+                rpcUrls: chainData.rpcUrls,
+                rpcUrl: chainData.rpcUrl,
 
-            // Merge into existing Glacier chain
-            // Keep Glacier's numeric chainId, add registry metadata
-            const updated = await Chain.findOneAndUpdate(
-              { _id: existingChain._id },
-              {
-                $set: {
-                  // Keep existing chainId from Glacier (numeric)
-                  // Add blockchainId from registry
-                  blockchainId: chainData.blockchainId,
-
-                  // Update basic info if registry has better data
-                  chainName: chainData.chainName,
-                  chainLogoUri: chainData.chainLogoUri,
-                  description: chainData.description,
-                  subnetId: chainData.subnetId,
-                  platformChainId: chainData.platformChainId,
-
-                  // Add registry metadata
-                  categories: chainData.categories,
-                  website: chainData.website,
-                  socials: chainData.socials,
-                  network: chainData.network,
-
-                  evmChainId: chainData.evmChainId,
-                  vmName: chainData.vmName,
-                  vmId: chainData.vmId,
-
-                  rpcUrls: chainData.rpcUrls,
-                  rpcUrl: chainData.rpcUrl,
-
-                  assets: chainData.assets,
-                  registryMetadata: chainData.registryMetadata,
-                }
-              },
-              { new: true }
-            );
-
-            // Debug logging for C-Chain after update
-            if (chainData.chainName === 'C-Chain') {
-              logger.info(`[DEBUG] C-Chain after update:`, {
-                chainId: updated.chainId,
-                blockchainId: updated.blockchainId,
-                categories: updated.categories,
-                network: updated.network,
-                rpcUrls: updated.rpcUrls?.length
-              });
-            }
-
-            mergedCount++;
-          } else {
-            // No existing chain found - create new from registry
-            await Chain.findOneAndUpdate(
-              { blockchainId: chainData.blockchainId },
-              {
-                $set: {
-                  chainId: chainData.chainId,
-                  blockchainId: chainData.blockchainId,
-                  chainName: chainData.chainName,
-                  chainLogoUri: chainData.chainLogoUri,
-                  description: chainData.description,
-                  subnetId: chainData.subnetId,
-                  platformChainId: chainData.platformChainId,
-
-                  categories: chainData.categories,
-                  website: chainData.website,
-                  socials: chainData.socials,
-                  network: chainData.network,
-
-                  evmChainId: chainData.evmChainId,
-                  vmName: chainData.vmName,
-                  vmId: chainData.vmId,
-
-                  rpcUrls: chainData.rpcUrls,
-                  rpcUrl: chainData.rpcUrl,
-
-                  assets: chainData.assets,
-                  registryMetadata: chainData.registryMetadata,
-                }
-              },
-              {
-                upsert: true,
-                new: true,
-                setDefaultsOnInsert: true
+                assets: chainData.assets,
+                registryMetadata: chainData.registryMetadata,
               }
-            );
-            newCount++;
-          }
+            },
+            {
+              upsert: true,
+              new: true,
+              setDefaultsOnInsert: true
+            }
+          );
+          newCount++;
           syncedCount++;
         } catch (error) {
           logger.error(`Error syncing chain ${chainData.chainName}:`, {
@@ -280,7 +194,7 @@ class RegistryService {
         }
       }
 
-      logger.info(`Registry sync complete: ${syncedCount} chains synced (${mergedCount} merged, ${newCount} new), ${errorCount} errors`);
+      logger.info(`Registry sync complete: ${syncedCount} chains synced (${newCount} upserted), ${errorCount} errors`);
       return { syncedCount, mergedCount, newCount, errorCount };
     } catch (error) {
       logger.error('Error syncing registry to database:', error);
