@@ -173,6 +173,20 @@ const initializeDataUpdates = async () => {
       logger.error('No chains fetched from Glacier API');
     }
 
+    // Initialize default authors from config
+    logger.info('[AUTHOR INIT] Initializing default authors...');
+    (async () => {
+      try {
+        await authorService.initializeDefaultAuthors();
+        logger.info('[AUTHOR INIT] Default authors initialization completed');
+      } catch (error) {
+        logger.error('[AUTHOR INIT] Error initializing default authors:', {
+          message: error.message,
+          stack: error.stack
+        });
+      }
+    })();
+
     // Initial blog sync
     logger.info('[BLOG INIT] Updating initial blog data...');
     (async () => {

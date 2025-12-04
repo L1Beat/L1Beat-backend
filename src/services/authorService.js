@@ -209,6 +209,41 @@ class AuthorService {
   }
 
   /**
+   * Initialize all default authors from config
+   * Creates or updates all default authors to ensure they exist with correct data
+   * @returns {Promise<Array>} Array of initialized authors
+   */
+  async initializeDefaultAuthors() {
+    try {
+      const authors = [];
+
+      for (const authorConfig of authorsConfig.defaultAuthors) {
+        const existingAuthor = await Author.findOne({ name: authorConfig.name });
+
+        if (existingAuthor) {
+          // Update existing author with config data
+          Object.assign(existingAuthor, authorConfig);
+          await existingAuthor.save();
+          logger.info(`[AUTHOR SERVICE] Updated existing author: ${authorConfig.name}`);
+          authors.push(existingAuthor);
+        } else {
+          // Create new author from config
+          const newAuthor = new Author(authorConfig);
+          await newAuthor.save();
+          logger.info(`[AUTHOR SERVICE] Created new author: ${authorConfig.name}`);
+          authors.push(newAuthor);
+        }
+      }
+
+      logger.info(`[AUTHOR SERVICE] Initialized ${authors.length} default authors`);
+      return authors;
+    } catch (error) {
+      logger.error("Error initializing default authors:", error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Format author for API response
    * @param {Object} author - Author document
    * @returns {Object} Formatted author object
