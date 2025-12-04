@@ -27,3 +27,4 @@ dist-ssr
 
 # Documentation (contains sensitive info)
 API_DOCUMENTATION.md
+DUPLICATE_CHAINS_FIX.md
