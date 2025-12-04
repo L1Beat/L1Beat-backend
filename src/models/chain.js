@@ -1,13 +1,12 @@
 const mongoose = require('mongoose');
 
 const chainSchema = new mongoose.Schema({
-    chainId: { type: String, required: true, unique: true },
+    subnetId: { type: String, required: true, unique: true },
     blockchainId: { type: String, unique: true, sparse: true },
     status: String,
     chainName: String,
     description: String,
     platformChainId: String,
-    subnetId: String,
     vmId: String,
     vmName: String,
     explorerUrl: String,
@@ -74,13 +73,13 @@ const chainSchema = new mongoose.Schema({
 });
 
 // Add indexes for better query performance
-chainSchema.index({ chainId: 1 });
+chainSchema.index({ subnetId: 1 });
 chainSchema.index({ blockchainId: 1 });
 chainSchema.index({ isTestnet: 1 });
 chainSchema.index({ status: 1 });
 chainSchema.index({ 'validators.validationStatus': 1 });
 chainSchema.index({ categories: 1 });
 chainSchema.index({ network: 1 });
-chainSchema.index({ subnetId: 1 });
+chainSchema.index({ evmChainId: 1 });
 
 module.exports = mongoose.model('Chain', chainSchema);

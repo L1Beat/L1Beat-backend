@@ -143,11 +143,11 @@ const initializeDataUpdates = async () => {
       try {
         // Only fetch validators, don't update chain metadata
         if (dbChain.subnetId) {
-          logger.debug(`[GLACIER] Fetching validators for ${dbChain.chainName} (${dbChain.chainId})`);
-          const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.chainId);
+          logger.debug(`[GLACIER] Fetching validators for ${dbChain.chainName} (${dbChain.subnetId})`);
+          const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
 
           if (validators && validators.length > 0) {
-            await chainService.updateValidatorsOnly(dbChain.chainId, validators);
+            await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
             logger.info(`[GLACIER] Updated ${validators.length} validators for ${dbChain.chainName}`);
           }
         }
@@ -251,10 +251,10 @@ const initializeDataUpdates = async () => {
         try {
           // Only fetch validators from Glacier, don't update chain metadata
           if (dbChain.subnetId) {
-            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.chainId);
+            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
 
             if (validators && validators.length > 0) {
-              await chainService.updateValidatorsOnly(dbChain.chainId, validators);
+              await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
             }
           }
 
@@ -281,7 +281,7 @@ const initializeDataUpdates = async () => {
         } catch (error) {
           logger.error(`[CRON] Error updating ${dbChain.chainName}:`, {
             message: error.message,
-            chainId: dbChain.chainId
+            subnetId: dbChain.subnetId
           });
         }
       }
