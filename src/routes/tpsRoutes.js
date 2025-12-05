@@ -89,7 +89,7 @@ router.get('/tps/network/history', async (req, res) => {
 // Add new health check route
 router.get('/tps/health', async (req, res) => {
     try {
-        const chains = await Chain.find().select('chainId').lean();
+        const chains = await Chain.find({ evmChainId: { $exists: true, $ne: null } }).select('evmChainId').lean();
         const currentTime = Math.floor(Date.now() / 1000);
         const oneDayAgo = currentTime - (24 * 60 * 60);
 
@@ -118,7 +118,7 @@ router.get('/tps/health', async (req, res) => {
             success: true,
             stats: {
                 totalChains: chains.length,
-                chainIds: chains.map(c => c.chainId),
+                chainIds: chains.map(c => c.evmChainId),
                 recentTpsRecords: tps.length,
                 lastTpsUpdate: tps[0] ? new Date(tps[0].timestamp * 1000).toISOString() : null,
                 environment: config.env,
@@ -150,24 +150,24 @@ router.get('/tps/diagnostic', async (req, res) => {
         const oneDayAgo = currentTime - (24 * 60 * 60);
         
         // Get all chains
-        const chains = await Chain.find().select('chainId').lean();
-        
+        const chains = await Chain.find({ evmChainId: { $exists: true, $ne: null } }).select('evmChainId').lean();
+
         // Get TPS data for each chain
         const chainData = await Promise.all(chains.map(async chain => {
-            const latestTps = await TPS.findOne({ 
-                chainId: chain.chainId,
+            const latestTps = await TPS.findOne({
+                chainId: String(chain.evmChainId),
                 timestamp: { $gte: oneDayAgo, $lte: currentTime }
             })
                 .sort({ timestamp: -1 })
                 .lean();
 
             const tpsCount = await TPS.countDocuments({
-                chainId: chain.chainId,
+                chainId: String(chain.evmChainId),
                 timestamp: { $gte: oneDayAgo, $lte: currentTime }
             });
 
             return {
-                chainId: chain.chainId,
+                chainId: chain.evmChainId,
                 hasData: !!latestTps,
                 recordCount: tpsCount,
                 latestValue: latestTps?.value,

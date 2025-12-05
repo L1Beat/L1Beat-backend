@@ -73,8 +73,7 @@ const chainSchema = new mongoose.Schema({
 });
 
 // Add indexes for better query performance
-chainSchema.index({ subnetId: 1 });
-chainSchema.index({ blockchainId: 1 });
+// Note: subnetId and blockchainId already have indexes from unique constraint
 chainSchema.index({ isTestnet: 1 });
 chainSchema.index({ status: 1 });
 chainSchema.index({ 'validators.validationStatus': 1 });

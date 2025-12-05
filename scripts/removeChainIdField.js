@@ -14,58 +14,80 @@ const logger = require('../src/utils/logger');
 
 async function removeChainIdField(dryRun = false) {
   try {
-    logger.info('Removing chainId field from all chains...');
+    logger.info('Starting migration to remove chainId field and index...');
     logger.info(`Mode: ${dryRun ? 'DRY RUN (no changes will be made)' : 'LIVE (field will be removed)'}\n`);
 
     // Get the raw collection (bypass the model to access chainId field)
     const db = mongoose.connection.db;
     const chainsCollection = db.collection('chains');
 
+    // --- STEP 1: Drop the chainId_1 index ---
+    logger.info('--- Step 1: Check for chainId_1 index ---');
+    try {
+      const indexExists = await chainsCollection.indexExists('chainId_1');
+      if (indexExists) {
+        if (dryRun) {
+          logger.info('[DRY RUN] Would drop index chainId_1');
+        } else {
+          logger.info('Dropping index chainId_1...');
+          await chainsCollection.dropIndex('chainId_1');
+          logger.info('Successfully dropped index chainId_1');
+        }
+      } else {
+        logger.info('Index chainId_1 does not exist.');
+      }
+    } catch (err) {
+       // indexExists might throw if index doesn't exist in some versions, or other errors
+       // We'll just log it, but if it's "ns not found" or similar it's fine.
+       logger.warn(`Note on index check: ${err.message}`);
+    }
+
+    // --- STEP 2: Remove chainId field ---
+    logger.info('\n--- Step 2: Check for chainId field ---');
+    
     // Count chains with chainId field
     const chainsWithChainId = await chainsCollection.countDocuments({ chainId: { $exists: true } });
     logger.info(`Chains with chainId field: ${chainsWithChainId}`);
 
-    if (chainsWithChainId === 0) {
-      logger.info('\nNo chains have chainId field. Nothing to remove.');
-      return { removed: 0 };
-    }
+    let removedCount = 0;
 
-    // Show sample chains that will be updated
-    const sampleChains = await chainsCollection.find({ chainId: { $exists: true } }).limit(5).toArray();
-    logger.info('\nSample chains that will be updated:');
-    sampleChains.forEach(chain => {
-      logger.info(`  - ${chain.chainName}: chainId="${chain.chainId}", subnetId="${chain.subnetId}"`);
-    });
+    if (chainsWithChainId > 0) {
+      // Show sample chains that will be updated
+      const sampleChains = await chainsCollection.find({ chainId: { $exists: true } }).limit(5).toArray();
+      logger.info('\nSample chains that will be updated:');
+      sampleChains.forEach(chain => {
+        logger.info(`  - ${chain.chainName}: chainId="${chain.chainId}", subnetId="${chain.subnetId}"`);
+      });
 
-    if (dryRun) {
-      logger.info(`\n[DRY RUN] Would remove chainId field from ${chainsWithChainId} chains`);
-      logger.info('[DRY RUN] Run without --dry-run flag to actually remove the field');
-      return { removed: 0 };
-    }
-
-    // Remove the chainId field from all documents
-    logger.info('\nRemoving chainId field...');
-    const result = await chainsCollection.updateMany(
-      { chainId: { $exists: true } },
-      { $unset: { chainId: "" } }
-    );
-
-    logger.info(`Successfully removed chainId field from ${result.modifiedCount} chains`);
-
-    // Verify
-    const remainingWithChainId = await chainsCollection.countDocuments({ chainId: { $exists: true } });
-    logger.info(`\nChains still with chainId field: ${remainingWithChainId}`);
-
-    if (remainingWithChainId === 0) {
-      logger.info('✓ All chainId fields successfully removed!');
+      if (dryRun) {
+        logger.info(`\n[DRY RUN] Would remove chainId field from ${chainsWithChainId} chains`);
+        logger.info('[DRY RUN] Run without --dry-run flag to actually remove the field');
+      } else {
+        // Remove the chainId field from all documents
+        logger.info('\nRemoving chainId field...');
+        const result = await chainsCollection.updateMany(
+          { chainId: { $exists: true } },
+          { $unset: { chainId: "" } }
+        );
+        removedCount = result.modifiedCount;
+        logger.info(`Successfully removed chainId field from ${removedCount} chains`);
+        
+        // Verify
+        const remainingWithChainId = await chainsCollection.countDocuments({ chainId: { $exists: true } });
+        if (remainingWithChainId === 0) {
+          logger.info('✓ All chainId fields successfully removed!');
+        } else {
+          logger.warn(`⚠ ${remainingWithChainId} chains still have chainId field`);
+        }
+      }
     } else {
-      logger.warn(`⚠ ${remainingWithChainId} chains still have chainId field`);
+      logger.info('No chains have chainId field. Nothing to remove.');
     }
 
-    return { removed: result.modifiedCount };
+    return { removed: removedCount };
 
   } catch (error) {
-    logger.error('Error removing chainId field:', error);
+    logger.error('Error during migration:', error);
     throw error;
   }
 }
