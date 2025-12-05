@@ -14,6 +14,7 @@ class AuthorService {
 
   /**
    * Map Substack author names to Author profiles with optional metadata (photo_url, bio, handle)
+   * Substack metadata takes priority over database records for blog post display
    * @param {Array<string>} substackAuthors - Author names from Substack RSS
    * @param {Array<Object>} substackMetadata - Optional metadata from Substack API (photo_url, bio, handle, substack_id)
    * @returns {Promise<Array<Object>>} Array of author profiles
@@ -53,21 +54,21 @@ class AuthorService {
           // Update existing author with Substack metadata
           let hasUpdate = false;
 
-          // Update avatar if Substack has one and current avatar is generic placeholder
-          if (metadata.photo_url && author.avatar === "https://i.postimg.cc/zXb7Q9Yd/ggggg.png") {
+          // Update avatar from Substack (Substack data takes priority)
+          if (metadata.photo_url && metadata.photo_url !== author.avatar) {
             author.avatar = metadata.photo_url;
             hasUpdate = true;
-            logger.debug(`[AUTHOR SERVICE] Updated avatar for ${authorName} from generic placeholder to Substack photo`);
+            logger.debug(`[AUTHOR SERVICE] Updated avatar for ${authorName} from Substack`);
           }
 
-          // Update bio if Substack has one and author doesn't
-          if (metadata.bio && !author.bio) {
+          // Update bio from Substack if Substack has one
+          if (metadata.bio && metadata.bio !== author.bio) {
             author.bio = metadata.bio;
             hasUpdate = true;
           }
 
-          // Add Substack handle to socialLinks if not present
-          if (metadata.handle && !author.socialLinks.substack) {
+          // Add Substack handle to socialLinks
+          if (metadata.handle && metadata.handle !== author.socialLinks.substack) {
             author.socialLinks.substack = `https://substack.com/@${metadata.handle}`;
             hasUpdate = true;
           }
@@ -79,7 +80,20 @@ class AuthorService {
         }
 
         if (author) {
-          authorProfiles.push(this.formatAuthorForResponse(author));
+          // For blog posts: merge Substack data with JSON file social details
+          const profileForBlogPost = this.formatAuthorForResponse(author);
+          if (metadata) {
+            // Override with Substack data for blog post display (content/media)
+            if (metadata.photo_url) {
+              profileForBlogPost.avatar = metadata.photo_url;
+            }
+            if (metadata.bio) {
+              profileForBlogPost.bio = metadata.bio;
+            }
+            // Keep social links from database/JSON file (don't override with Substack)
+            // profileForBlogPost.socialLinks already has the values from author database record
+          }
+          authorProfiles.push(profileForBlogPost);
         }
       }
 
@@ -94,6 +108,7 @@ class AuthorService {
 
   /**
    * Create a basic author profile for unknown authors
+   * Merges Substack metadata with JSON config data
    * @param {string} authorName - Author name from Substack
    * @param {Object} substackMetadata - Optional metadata from Substack API (photo_url, bio, handle, substack_id)
    * @returns {Promise<Object|null>} Created author or null
@@ -113,6 +128,12 @@ class AuthorService {
         return existingAuthor;
       }
 
+      // Check if this author exists in the JSON config
+      const jsonAuthor = authorsConfig.defaultAuthors.find(
+        a => a.name.toLowerCase() === authorName.toLowerCase() ||
+             (a.substackNames && a.substackNames.some(n => n.toLowerCase() === authorName.toLowerCase()))
+      );
+
       // Use Substack metadata if available, otherwise generate URL from slug
       let substackUrl = "";
       let avatar = "";
@@ -130,25 +151,27 @@ class AuthorService {
         substackUrl = substackSlug ? `https://${substackSlug}.substack.com` : "";
       }
 
-      // Use defaults from JSON configuration
-      const defaults = authorsConfig.autoCreateDefaults;
+      // Use JSON config if available, otherwise use defaults
+      const configData = jsonAuthor || authorsConfig.autoCreateDefaults;
+      const jsonSocialLinks = jsonAuthor ? jsonAuthor.socialLinks : authorsConfig.autoCreateDefaults.socialLinks;
 
       const author = new Author({
         name: authorName,
-        slug: slug,
-        bio: bio || defaults.bio,
-        avatar: avatar, // Use Substack photo_url if available, otherwise empty
-        role: defaults.role,
+        slug: jsonAuthor?.slug || slug,
+        bio: bio || jsonAuthor?.bio || configData.bio,
+        avatar: avatar, // Substack photo_url takes priority
+        role: jsonAuthor?.role || configData.role,
         substackNames: [authorName],
         socialLinks: {
-          ...defaults.socialLinks,
-          substack: substackUrl,
+          ...jsonSocialLinks,
+          substack: substackUrl || (jsonAuthor?.socialLinks?.substack || ""),
         },
         isActive: true,
       });
 
       await author.save();
       logger.info(`Created basic author profile for: ${authorName}`, {
+        fromJsonConfig: !!jsonAuthor,
         hasAvatar: !!avatar,
         hasBio: !!bio,
         hasSubstackUrl: !!substackUrl
