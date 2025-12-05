@@ -189,8 +189,8 @@ class TeleporterService {
             const mapping = {};
 
             for (const chain of chains) {
-                if (chain.chainId && chain.chainName) {
-                    mapping[chain.chainId] = chain.chainName;
+                if (chain.evmChainId && chain.chainName) {
+                    mapping[chain.evmChainId] = chain.chainName;
                 }
             }
 

@@ -267,8 +267,8 @@ class TpsService {
 
   async getNetworkTps() {
     try {
-      const chains = await Chain.find().select('chainId').lean();
-      
+      const chains = await Chain.find({ evmChainId: { $exists: true, $ne: null } }).select('evmChainId').lean();
+
       const currentTime = Math.floor(Date.now() / 1000);
       const oneDayAgo = currentTime - (24 * 60 * 60);
 
@@ -294,9 +294,9 @@ class TpsService {
         }
       });
 
-      const latestTpsPromises = chains.map(chain => 
-        TPS.findOne({ 
-          chainId: chain.chainId,
+      const latestTpsPromises = chains.map(chain =>
+        TPS.findOne({
+          chainId: String(chain.evmChainId),
           timestamp: { $gte: oneDayAgo, $lte: currentTime } // Add upper bound
         })
           .sort({ timestamp: -1 })
@@ -388,16 +388,19 @@ class TpsService {
 
   async getNetworkTpsHistory(days = 7) {
     try {
-      const cutoffDate = Math.floor(Date.now() / 1000) - (days * 24 * 60 * 60);
-      
-      // Get all chains
-      const chains = await Chain.find().select('chainId').lean();
-      
+      // Calculate cutoff from start of today to get complete days
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const cutoffDate = Math.floor(startOfToday.getTime() / 1000) - (days * 24 * 60 * 60);
+
+      // Get all chains with evmChainId
+      const chains = await Chain.find({ evmChainId: { $exists: true, $ne: null } }).select('evmChainId').lean();
+
       // Get TPS data for all chains within the time range
       const tpsData = await TPS.aggregate([
         {
           $match: {
-            chainId: { $in: chains.map(c => c.chainId) },
+            chainId: { $in: chains.map(c => String(c.evmChainId)) },
             timestamp: { $gte: cutoffDate }
           }
         },
