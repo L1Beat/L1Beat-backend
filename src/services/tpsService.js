@@ -138,7 +138,7 @@ class TpsService {
             
             const isValid = timestamp >= thirtyDaysAgo && timestamp <= currentTime;
             if (!isValid) {
-              logger.warn(`[TPS Update] Out of range timestamp for chain ${chainId}:`, {
+              logger.debug(`[TPS Update] Out of range timestamp for chain ${chainId}:`, {
                 timestamp: new Date(timestamp * 1000).toISOString(),
                 value
               });
@@ -502,7 +502,7 @@ class TpsService {
             
             const isValid = timestamp >= thirtyDaysAgo && timestamp <= currentTime;
             if (!isValid) {
-              logger.warn(`[TxCount Update] Out of range timestamp for chain ${chainId}:`, {
+              logger.debug(`[TxCount Update] Out of range timestamp for chain ${chainId}:`, {
                 timestamp: new Date(timestamp * 1000).toISOString(),
                 value
               });
