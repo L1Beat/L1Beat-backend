@@ -11,20 +11,16 @@ exports.getAllChains = async (req, res) => {
 
         const chains = await chainService.getAllChains(filters);
 
-        // Permanently exclude X-Chain and P-Chain
-        const filteredChains = chains.filter(chain => {
-            const name = (chain.chainName || '').toLowerCase();
-            return !name.includes('x-chain') && !name.includes('p-chain');
-        });
+        // Note: X-Chain and P-Chain are already excluded from l1-registry
+        // No need to filter here (previous filter accidentally excluded C-Chain due to substring match bug)
 
         console.log('Chains fetched:', {
-            count: filteredChains?.length || 0,
-            firstChain: filteredChains?.[0] ? filteredChains[0].chainId : null,
-            filters,
-            excluded: chains.length - filteredChains.length
+            count: chains?.length || 0,
+            firstChain: chains?.[0] ? chains[0].chainId : null,
+            filters
         });
 
-        res.json(filteredChains || []);
+        res.json(chains || []);
     } catch (error) {
         console.error('Error in getAllChains:', error);
         res.status(500).json({
