@@ -472,18 +472,33 @@ class SubstackService {
           // Extract author names from profiles for consistency
           const profileNames = authorProfiles.map(profile => profile.name);
 
-          // Prepare data for database
+          // Fetch existing post to preserve JSON-only fields
+          const existingPost = await BlogPost.findOne({ substackId: postData.substackId });
+
+          // Prepare data for database - Substack data takes priority
           const dbData = {
-            ...postData,
+            // Substack priority fields (always update from Substack)
+            title: postData.title,
+            slug: postData.slug,
+            subtitle: postData.subtitle || "",
+            excerpt: postData.excerpt,
+            content: postData.content,
+            mainContent: postData.mainContent || postData.content,
+            publishedAt: postData.publishedAt,
+            authors: profileNames.length > 0 ? profileNames : ["L1Beat"],
+            author: profileNames.length > 0 ? profileNames[0] : "L1Beat",
+            authorProfiles: authorProfiles,
+            substackUrl: postData.substackUrl,
+            substackId: postData.substackId,
+            tags: postData.tags,
+            // Metadata fields
             readTime: readingTime,
             lastSynced: new Date(),
             syncStatus: "synced",
-            // Ensure new fields have defaults
-            subtitle: postData.subtitle || "",
-            mainContent: postData.mainContent || postData.content,
-            authors: profileNames.length > 0 ? profileNames : ["L1Beat"], // Use mapped author names from profiles
-            author: profileNames.length > 0 ? profileNames[0] : "L1Beat", // Keep for compatibility
-            authorProfiles: authorProfiles, // NEW: Add mapped author profiles
+            // Preserve existing JSON-only fields if they exist
+            imageUrl: existingPost?.imageUrl || postData.imageUrl || "",
+            sourceUrl: existingPost?.sourceUrl || postData.sourceUrl || "",
+            views: existingPost?.views || 0,
           };
 
           // Update or create post
