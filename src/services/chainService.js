@@ -17,6 +17,7 @@ class ChainService {
     // Get all chains with optional filtering
     async getAllChains(filters = {}) {
         try {
+            const startTime = Date.now();
             const { category, network } = filters;
 
             // Build cache key with filters
@@ -36,91 +37,165 @@ class ChainService {
                 query.network = network;
             }
 
-            const chains = await Chain.find(query);
-
-            // Helper function to fetch with timeout
-            const fetchWithTimeout = (promise, timeoutMs) => {
-                return Promise.race([
-                    promise,
-                    new Promise((_, reject) =>
-                        setTimeout(() => reject(new Error('Timeout')), timeoutMs)
-                    )
-                ]);
-            };
-
-            // Fetch latest TPS and cumulative TX count for each chain
-            const chainsWithTps = await Promise.all(chains.map(async (chain) => {
-                try {
-                    // Use evmChainId if available (registry chains), otherwise use chainId (Glacier chains)
-                    const chainIdForTps = chain.evmChainId || chain.chainId;
-
-                    // Only fetch TPS if we have a numeric chain ID
-                    if (!chainIdForTps || !/^\d+$/.test(String(chainIdForTps))) {
-                        logger.debug(`Skipping TPS fetch for chain ${chain.chainName} - no valid numeric chain ID`);
-                        return chain.toObject();
+            // Fetch chains with validator count using aggregation
+            const chains = await Chain.aggregate([
+                { $match: query },
+                {
+                    $addFields: {
+                        validatorCount: { $size: { $ifNull: ["$validators", []] } }
                     }
-
-                    // Fetch TPS with 3 second timeout (don't block entire request)
-                    const tpsData = await fetchWithTimeout(
-                        tpsService.getLatestTps(String(chainIdForTps)),
-                        3000
-                    ).catch(err => {
-                        if (err.message !== 'Timeout') {
-                            logger.debug(`Error fetching TPS for chain ${chain.chainName}:`, err.message);
-                        }
-                        return null;
-                    });
-
-                    // Fetch cumulative TX count with 2 second timeout (optional, don't block)
-                    const txCountData = await fetchWithTimeout(
-                        tpsService.getLatestTxCount(String(chainIdForTps)),
-                        2000
-                    ).catch(err => {
-                        if (err.message !== 'Timeout') {
-                            logger.debug(`No cumulative TX count for chain ${chain.chainName}:`, err.message);
-                        }
-                        return null;
-                    });
-
-                    return {
-                        ...chain.toObject(),
-                        tps: tpsData ? {
-                            value: parseFloat(tpsData.value).toFixed(2),
-                            timestamp: tpsData.timestamp
-                        } : null,
-                        cumulativeTxCount: txCountData ? {
-                            value: txCountData.value,
-                            timestamp: txCountData.timestamp
-                        } : null
-                    };
-                } catch (error) {
-                    logger.error(`Error fetching data for chain ${chain.chainId}:`, { error: error.message });
-                    return chain.toObject();
+                },
+                {
+                    $project: {
+                        validators: 0,
+                        registryMetadata: 0
+                    }
                 }
-            }));
+            ]);
+
+            logger.info(`Fetched ${chains.length} chains in ${Date.now() - startTime}ms`);
+
+            // Collect all valid chain IDs for batch fetching
+            const chainIdMap = new Map(); // Maps chainIdForTps -> chain object
+            chains.forEach(chain => {
+                const chainIdForTps = chain.evmChainId || chain.chainId;
+                if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+                    chainIdMap.set(String(chainIdForTps), chain);
+                }
+            });
+
+            const chainIds = Array.from(chainIdMap.keys());
+            logger.info(`Found ${chainIds.length} chains with valid numeric IDs for metrics fetch`);
+
+            if (chainIds.length === 0) {
+                // No chains with valid IDs, return as-is
+                return chains;
+            }
+
+            // Batch fetch latest TPS for all chains in a single aggregation query
+            const batchStartTime = Date.now();
+            const TPS = require('../models/tps');
+            const CumulativeTxCount = require('../models/cumulativeTxCount');
+
+            // Fetch all latest TPS records in one aggregation
+            const tpsRecords = await TPS.aggregate([
+                { $match: { chainId: { $in: chainIds } } },
+                { $sort: { chainId: 1, timestamp: -1 } },
+                {
+                    $group: {
+                        _id: '$chainId',
+                        value: { $first: '$value' },
+                        timestamp: { $first: '$timestamp' }
+                    }
+                }
+            ]);
+
+            // Fetch all latest TxCount records in one aggregation
+            const txCountRecords = await CumulativeTxCount.aggregate([
+                { $match: { chainId: { $in: chainIds } } },
+                { $sort: { chainId: 1, timestamp: -1 } },
+                {
+                    $group: {
+                        _id: '$chainId',
+                        value: { $first: '$value' },
+                        timestamp: { $first: '$timestamp' }
+                    }
+                }
+            ]);
+
+            logger.info(`Batch fetched metrics for ${chainIds.length} chains in ${Date.now() - batchStartTime}ms (TPS: ${tpsRecords.length}, TxCount: ${txCountRecords.length})`);
+
+            // Create Maps for O(1) lookup
+            const tpsMap = new Map(tpsRecords.map(r => [r._id, { value: r.value, timestamp: r.timestamp }]));
+            const txCountMap = new Map(txCountRecords.map(r => [r._id, { value: r.value, timestamp: r.timestamp }]));
+
+            // Merge metrics data with chains in-memory
+            const chainsWithMetrics = chains.map(chain => {
+                const chainIdForTps = String(chain.evmChainId || chain.chainId);
+
+                if (!chainIdMap.has(chainIdForTps)) {
+                    // Chain doesn't have valid numeric ID
+                    return {
+                        ...chain,
+                        tps: null,
+                        cumulativeTxCount: null
+                    };
+                }
+
+                const tpsData = tpsMap.get(chainIdForTps);
+                const txCountData = txCountMap.get(chainIdForTps);
+
+                return {
+                    ...chain,
+                    tps: tpsData ? {
+                        value: parseFloat(tpsData.value).toFixed(2),
+                        timestamp: tpsData.timestamp
+                    } : null,
+                    cumulativeTxCount: txCountData ? {
+                        value: txCountData.value,
+                        timestamp: txCountData.timestamp
+                    } : null
+                };
+            });
+
+            logger.info(`Total getAllChains execution time: ${Date.now() - startTime}ms`);
 
             // Cache the result for 5 minutes
-            cacheManager.set(cacheKey, chainsWithTps, config.cache.chains);
+            cacheManager.set(cacheKey, chainsWithMetrics, config.cache.chains);
 
-            return chainsWithTps;
+            return chainsWithMetrics;
         } catch (error) {
             logger.error('Error fetching chains:', { error: error.message });
             throw new Error(`Error fetching chains: ${error.message}`);
         }
     }
 
-    // Get chain by subnet ID
-    async getChainBySubnetId(subnetId) {
+    // Get chain by ID (tries subnetId, evmChainId, and blockchainId)
+    async getChainById(id) {
         try {
             // Check cache first
-            const cacheKey = `chain_${subnetId}`;
+            const cacheKey = `chain_${id}`;
             const cachedChain = cacheManager.get(cacheKey);
             if (cachedChain) {
-                logger.debug(`Returning cached data for chain ${subnetId}`);
+                logger.debug(`Returning cached data for chain ${id}`);
                 return cachedChain;
             }
 
-            const chain = await Chain.findOne({ subnetId });
+            // Try to find by subnetId first (most common), then evmChainId, then blockchainId
+            let chain = await Chain.findOne({
+                $or: [
+                    { subnetId: id },
+                    { evmChainId: id },
+                    { blockchainId: id }
+                ]
+            }).lean();
+
+            if (!chain) {
+                throw new Error('Chain not found');
+            }
+
+            // Cache the result for 5 minutes
+            cacheManager.set(cacheKey, chain, config.cache.chains);
+
+            return chain;
+        } catch (error) {
+            logger.error(`Error fetching chain ${id}:`, { error: error.message });
+            throw new Error(`Error fetching chain: ${error.message}`);
+        }
+    }
+
+    // Get chain by subnet ID (specific lookup - kept for backwards compatibility)
+    async getChainBySubnetId(subnetId) {
+        try {
+            // Check cache first
+            const cacheKey = `chain_subnet_${subnetId}`;
+            const cachedChain = cacheManager.get(cacheKey);
+            if (cachedChain) {
+                logger.debug(`Returning cached data for chain with subnetId ${subnetId}`);
+                return cachedChain;
+            }
+
+            const chain = await Chain.findOne({ subnetId }).lean();
             if (!chain) {
                 throw new Error('Chain not found');
             }

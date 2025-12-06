@@ -25,6 +25,5 @@ dist-ssr
 *.sw?
 .vercel
 
-# Documentation (contains sensitive info)
-API_DOCUMENTATION.md
-DUPLICATE_CHAINS_FIX.md
+# Internal documentation (not for git)
+.docs/
