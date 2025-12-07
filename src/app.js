@@ -264,8 +264,6 @@ const initializeDataUpdates = async () => {
 
       // Process chains in parallel with concurrency limit
       const limit = pLimit(15); // Process 15 chains concurrently
-      let successCount = 0;
-      let failureCount = 0;
 
       const updatePromises = dbChains.map(dbChain =>
         limit(async () => {
@@ -300,19 +298,21 @@ const initializeDataUpdates = async () => {
               await feesPaidService.updateFeesPaidData(String(chainIdForTps));
             }
 
-            successCount++;
-            logger.info(`[CRON] Successfully updated ${dbChain.chainName} (${successCount}/${dbChains.length})`);
+            logger.info(`[CRON] Successfully updated ${dbChain.chainName}`);
+            return { success: true };
           } catch (error) {
-            failureCount++;
             logger.error(`[CRON] Error updating ${dbChain.chainName}:`, {
               message: error.message,
               subnetId: dbChain.subnetId
             });
+            return { success: false };
           }
         })
       );
 
-      await Promise.allSettled(updatePromises);
+      const results = await Promise.all(updatePromises);
+      const successCount = results.filter(r => r.success).length;
+      const failureCount = results.filter(r => !r.success).length;
 
       const cronDuration = ((Date.now() - cronStartTime) / 1000 / 60).toFixed(2);
       logger.info(`[CRON] Completed update cycle in ${cronDuration} minutes (${successCount} succeeded, ${failureCount} failed)`);
