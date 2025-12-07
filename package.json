@@ -15,6 +15,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@l1beat/l1-registry": "file:./l1-registry",
     "axios": "^1.7.7",
     "cheerio": "^1.1.2",
     "cors": "^2.8.5",
