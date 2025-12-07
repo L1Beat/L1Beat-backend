@@ -8,31 +8,38 @@ class TeleporterService {
         this.GLACIER_API_BASE = process.env.GLACIER_API_BASE || config.api.glacier.baseUrl;
         this.GLACIER_API_KEY = process.env.GLACIER_API_KEY;
         this.UPDATE_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
-        this.TIMEOUT = 30000; // 30 seconds
-        
+        this.TIMEOUT_DAILY = 30000; // 30 seconds for daily updates
+        this.TIMEOUT_WEEKLY = 60000; // 60 seconds for weekly updates (more complex queries)
+
         if (!this.GLACIER_API_KEY) {
             logger.warn('GLACIER_API_KEY not found in environment variables');
         }
-        
+
         if (!this.GLACIER_API_BASE) {
             logger.error('GLACIER_API_BASE not configured');
         }
-        
+
         logger.info('TeleporterService initialized', {
             hasApiKey: !!this.GLACIER_API_KEY,
-            apiBase: this.GLACIER_API_BASE
+            apiBase: this.GLACIER_API_BASE,
+            timeouts: {
+                daily: `${this.TIMEOUT_DAILY / 1000}s`,
+                weekly: `${this.TIMEOUT_WEEKLY / 1000}s`
+            }
         });
     }
 
     /**
      * Fetch ICM messages from Glacier API
      * @param {number} hoursAgo - How many hours ago to start fetching from
+     * @param {string} updateType - Type of update ('daily' or 'weekly') for logging
      * @returns {Promise<Array>} Array of messages
      */
-    async fetchICMMessages(hoursAgo = 24) {
+    async fetchICMMessages(hoursAgo = 24, updateType = 'daily') {
         try {
             const endTime = Math.floor(Date.now() / 1000);
             const startTime = endTime - (hoursAgo * 60 * 60);
+            const updateLabel = updateType.toUpperCase();
 
             const headers = {
                 'Accept': 'application/json',
@@ -50,11 +57,12 @@ class TeleporterService {
                 pageSize: 100
             };
 
-            logger.info(`Fetching ICM messages from ${hoursAgo} hours ago`, { 
-                startTime, 
+            logger.info(`[TELEPORTER ${updateLabel}] Fetching ICM messages from last ${hoursAgo} hours`, {
+                startTime,
                 endTime,
                 startTimeISO: new Date(startTime * 1000).toISOString(),
-                endTimeISO: new Date(endTime * 1000).toISOString()
+                endTimeISO: new Date(endTime * 1000).toISOString(),
+                timeRange: `${hoursAgo} hours (${Math.round(hoursAgo / 24)} days)`
             });
 
             let allMessages = [];
@@ -62,20 +70,48 @@ class TeleporterService {
             let pageCount = 0;
             const maxPages = 1000; // Higher safety limit
             let reachedTimeLimit = false;
+            const fetchStartTime = Date.now();
 
             do {
                 pageCount++;
-                
+                const pageStartTime = Date.now();
+
                 if (nextPageToken) {
                     params.pageToken = nextPageToken;
                 }
 
-                const response = await axios.get(`${this.GLACIER_API_BASE}/icm/messages`, {
-                    headers,
-                    params,
-                    timeout: this.TIMEOUT
-                });
+                // Use longer timeout for weekly updates
+                const timeout = updateType === 'weekly' ? this.TIMEOUT_WEEKLY : this.TIMEOUT_DAILY;
 
+                // Retry logic for timeout errors
+                let response;
+                let retryCount = 0;
+                const maxRetries = 3;
+
+                while (retryCount <= maxRetries) {
+                    try {
+                        response = await axios.get(`${this.GLACIER_API_BASE}/icm/messages`, {
+                            headers,
+                            params,
+                            timeout
+                        });
+                        break; // Success, exit retry loop
+                    } catch (error) {
+                        if (error.code === 'ECONNABORTED' && retryCount < maxRetries) {
+                            retryCount++;
+                            const waitTime = Math.min(1000 * Math.pow(2, retryCount), 10000); // Exponential backoff, max 10s
+                            logger.warn(`[TELEPORTER ${updateLabel}] Page ${pageCount} timeout (attempt ${retryCount}/${maxRetries + 1}), retrying in ${waitTime / 1000}s...`, {
+                                timeout: `${timeout / 1000}s`,
+                                pageToken: nextPageToken ? 'present' : 'none'
+                            });
+                            await new Promise(resolve => setTimeout(resolve, waitTime));
+                        } else {
+                            throw error; // Throw if not a timeout or max retries reached
+                        }
+                    }
+                }
+
+                const pageFetchTime = ((Date.now() - pageStartTime) / 1000).toFixed(2);
                 const messages = response.data?.messages || [];
                 let validMessages = [];
 
@@ -107,7 +143,7 @@ class TeleporterService {
                     } else {
                         // Found a message older than our time window, stop pagination
                         reachedTimeLimit = true;
-                        logger.info(`Found message older than ${hoursAgo} hours, stopping pagination`, {
+                        logger.info(`[TELEPORTER ${updateLabel}] Found message older than ${hoursAgo} hours, stopping pagination`, {
                             messageTimestamp: new Date(timestampInSeconds * 1000).toISOString(),
                             startTime: new Date(startTime * 1000).toISOString(),
                             page: pageCount,
@@ -121,21 +157,32 @@ class TeleporterService {
                 allMessages = allMessages.concat(validMessages);
                 nextPageToken = response.data?.nextPageToken;
 
-                logger.info(`Fetched page ${pageCount}, got ${messages.length} messages (${validMessages.length} valid)`, {
+                // Calculate estimated time remaining for weekly updates
+                const elapsedTime = (Date.now() - fetchStartTime) / 1000;
+                const avgTimePerPage = elapsedTime / pageCount;
+                const estimatedPagesRemaining = updateType === 'weekly' ? Math.max(0, (hoursAgo / 24 * 100) - pageCount) : 0;
+                const estimatedTimeRemaining = estimatedPagesRemaining * avgTimePerPage / 60;
+
+                logger.info(`[TELEPORTER ${updateLabel}] Page ${pageCount} fetched in ${pageFetchTime}s: ${messages.length} messages (${validMessages.length} valid)`, {
                     totalMessages: allMessages.length,
                     hasNextPage: !!nextPageToken,
-                    reachedTimeLimit
+                    reachedTimeLimit,
+                    avgTimePerPage: `${avgTimePerPage.toFixed(2)}s`,
+                    ...(updateType === 'weekly' && estimatedPagesRemaining > 0 ? {
+                        estimatedPagesRemaining,
+                        estimatedTimeRemaining: `~${Math.ceil(estimatedTimeRemaining)} min`
+                    } : {})
                 });
 
                 // If we reached the time limit, stop pagination
                 if (reachedTimeLimit) {
-                    logger.info(`Reached time limit (${hoursAgo} hours), stopping pagination`);
+                    logger.info(`[TELEPORTER ${updateLabel}] Reached time limit (${hoursAgo} hours), stopping pagination`);
                     break;
                 }
 
                 // Safety check to prevent infinite loops (should rarely be hit now)
                 if (pageCount >= maxPages) {
-                    logger.warn(`Reached maximum page limit (${maxPages}), stopping pagination`);
+                    logger.warn(`[TELEPORTER ${updateLabel}] Reached maximum page limit (${maxPages}), stopping pagination`);
                     break;
                 }
 
@@ -146,17 +193,24 @@ class TeleporterService {
 
             } while (nextPageToken);
 
-            logger.info(`Completed fetching ICM messages: ${allMessages.length} total messages from ${pageCount} pages`, {
+            const totalFetchTime = ((Date.now() - fetchStartTime) / 1000 / 60).toFixed(2);
+            logger.info(`[TELEPORTER ${updateLabel}] ✅ Completed fetching: ${allMessages.length} messages from ${pageCount} pages in ${totalFetchTime} minutes`, {
                 reachedTimeLimit,
-                hitPageLimit: pageCount >= maxPages
+                hitPageLimit: pageCount >= maxPages,
+                avgTimePerPage: `${((Date.now() - fetchStartTime) / 1000 / pageCount).toFixed(2)}s`
             });
             return allMessages;
 
         } catch (error) {
-            logger.error('Error fetching ICM messages:', {
+            const updateLabel = updateType ? updateType.toUpperCase() : 'UNKNOWN';
+            logger.error(`[TELEPORTER ${updateLabel}] Error fetching ICM messages:`, {
                 message: error.message,
+                code: error.code,
                 status: error.response?.status,
-                statusText: error.response?.statusText
+                statusText: error.response?.statusText,
+                isTimeout: error.code === 'ECONNABORTED',
+                pageCount,
+                totalMessages: allMessages.length
             });
             throw error;
         }
@@ -178,7 +232,7 @@ class TeleporterService {
             
             // Fetch chain data from our own API
             const response = await axios.get(`http://localhost:${process.env.PORT || 5001}/api/chains`, {
-                timeout: this.TIMEOUT,
+                timeout: this.TIMEOUT_DAILY, // Use daily timeout for internal API calls
                 headers: {
                     'Accept': 'application/json',
                     'User-Agent': 'l1beat-backend-internal'
@@ -285,7 +339,7 @@ class TeleporterService {
 
             logger.info('[TELEPORTER DAILY] Fetching ICM messages for last 24 hours...');
             // Fetch and process messages
-            const messages = await this.fetchICMMessages(24);
+            const messages = await this.fetchICMMessages(24, 'daily');
             logger.info(`[TELEPORTER DAILY] Fetched ${messages.length} raw messages from Glacier API`);
             
             const processedData = await this.processMessages(messages);
@@ -402,7 +456,7 @@ class TeleporterService {
 
             // Fetch and process messages for the last 7 days (168 hours)
             logger.info('[TELEPORTER WEEKLY] Fetching ICM messages for last 7 days (168 hours)...');
-            const messages = await this.fetchICMMessages(168); // 7 * 24 = 168 hours
+            const messages = await this.fetchICMMessages(168, 'weekly'); // 7 * 24 = 168 hours
             logger.info(`[TELEPORTER WEEKLY] Fetched ${messages.length} raw messages from Glacier API`);
             
             const processedData = await this.processMessages(messages);

@@ -1,9 +1,10 @@
 const chainService = require('../services/chainService');
+const logger = require('../utils/logger');
 
 exports.getAllChains = async (req, res) => {
     try {
         const { category, network } = req.query;
-        console.log('Fetching all chains with filters:', { category, network });
+        logger.debug('Fetching all chains with filters', { category, network });
 
         const filters = {};
         if (category) filters.category = category;
@@ -14,15 +15,14 @@ exports.getAllChains = async (req, res) => {
         // Note: X-Chain and P-Chain are already excluded from l1-registry
         // No need to filter here (previous filter accidentally excluded C-Chain due to substring match bug)
 
-        console.log('Chains fetched:', {
+        logger.debug('Chains fetched successfully', {
             count: chains?.length || 0,
-            firstChain: chains?.[0] ? chains[0].chainId : null,
             filters
         });
 
         res.json(chains || []);
     } catch (error) {
-        console.error('Error in getAllChains:', error);
+        logger.error('Error in getAllChains', { message: error.message, stack: error.stack });
         res.status(500).json({
             error: 'Failed to fetch chains',
             message: error.message,
@@ -95,17 +95,16 @@ exports.fetchValidatorsDirectly = async (req, res) => {
 // Get all unique categories
 exports.getAllCategories = async (req, res) => {
     try {
-        console.log('Fetching all categories...');
+        logger.debug('Fetching all categories');
         const categories = await chainService.getAllCategories();
 
-        console.log('Categories fetched:', {
-            count: categories?.length || 0,
-            categories
+        logger.debug('Categories fetched successfully', {
+            count: categories?.length || 0
         });
 
         res.json(categories || []);
     } catch (error) {
-        console.error('Error in getAllCategories:', error);
+        logger.error('Error in getAllCategories', { message: error.message, stack: error.stack });
         res.status(500).json({
             error: 'Failed to fetch categories',
             message: error.message,
