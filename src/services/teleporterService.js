@@ -203,14 +203,18 @@ class TeleporterService {
 
         } catch (error) {
             const updateLabel = updateType ? updateType.toUpperCase() : 'UNKNOWN';
+            // Safely access pageCount and allMessages in case error occurred before they were initialized
+            const currentPageCount = typeof pageCount !== 'undefined' ? pageCount : 0;
+            const currentMessageCount = typeof allMessages !== 'undefined' ? allMessages.length : 0;
+
             logger.error(`[TELEPORTER ${updateLabel}] Error fetching ICM messages:`, {
                 message: error.message,
                 code: error.code,
                 status: error.response?.status,
                 statusText: error.response?.statusText,
                 isTimeout: error.code === 'ECONNABORTED',
-                pageCount,
-                totalMessages: allMessages.length
+                pageCount: currentPageCount,
+                totalMessages: currentMessageCount
             });
             throw error;
         }
@@ -308,34 +312,52 @@ class TeleporterService {
         try {
             logger.info('[TELEPORTER DAILY] Starting daily teleporter data update (last 24 hours)');
 
-            // Check if update is already in progress
-            const existingUpdate = await TeleporterUpdateState.findOne({
-                updateType: 'daily',
-                state: 'in_progress'
-            });
-
-            if (existingUpdate) {
-                const timeSinceUpdate = Date.now() - new Date(existingUpdate.lastUpdatedAt).getTime();
-                if (timeSinceUpdate < 10 * 60 * 1000) { // 10 minutes
-                    logger.info('[TELEPORTER DAILY] Update already in progress, skipping');
-                    return { success: true, status: 'in_progress' };
+            // First, clean up any stale updates (older than 60 minutes)
+            // Daily updates typically complete in 30-40 minutes, so 60 min is safe buffer
+            const sixtyMinutesAgo = new Date(Date.now() - 60 * 60 * 1000);
+            await TeleporterUpdateState.updateMany(
+                {
+                    updateType: 'daily',
+                    state: 'in_progress',
+                    lastUpdatedAt: { $lt: sixtyMinutesAgo }
+                },
+                {
+                    $set: {
+                        state: 'failed',
+                        error: { message: 'Update timed out (stale cleanup)' },
+                        lastUpdatedAt: new Date()
+                    }
                 }
+            );
 
-                // Mark stale update as failed
-                existingUpdate.state = 'failed';
-                existingUpdate.error = { message: 'Update timed out' };
-                await existingUpdate.save();
-                logger.warn('[TELEPORTER DAILY] Marked stale update as failed, proceeding with new update');
+            // Use atomic findOneAndUpdate to prevent race conditions
+            const updateState = await TeleporterUpdateState.findOneAndUpdate(
+                {
+                    updateType: 'daily',
+                    state: { $ne: 'in_progress' } // Only proceed if no in_progress update
+                },
+                {
+                    $set: {
+                        state: 'in_progress',
+                        startedAt: new Date(),
+                        lastUpdatedAt: new Date(),
+                        error: null
+                    }
+                },
+                {
+                    upsert: true,  // Create if doesn't exist
+                    new: true,     // Return the updated document
+                    setDefaultsOnInsert: true
+                }
+            );
+
+            // If findOneAndUpdate returned null, another update is already in progress
+            if (!updateState) {
+                logger.info('[TELEPORTER DAILY] Update already in progress (atomic lock), skipping');
+                return { success: true, status: 'in_progress' };
             }
 
-            // Create new update state
-            const updateState = new TeleporterUpdateState({
-                updateType: 'daily',
-                state: 'in_progress',
-                startedAt: new Date(),
-                lastUpdatedAt: new Date()
-            });
-            await updateState.save();
+            logger.info('[TELEPORTER DAILY] Acquired update lock, proceeding with update');
 
             logger.info('[TELEPORTER DAILY] Fetching ICM messages for last 24 hours...');
             // Fetch and process messages
@@ -425,34 +447,53 @@ class TeleporterService {
         try {
             logger.info('[TELEPORTER WEEKLY] Starting weekly teleporter data update (last 7 days)');
 
-            // Check if update is already in progress
-            const existingUpdate = await TeleporterUpdateState.findOne({
-                updateType: 'weekly',
-                state: 'in_progress'
-            });
-
-            if (existingUpdate) {
-                const timeSinceUpdate = Date.now() - new Date(existingUpdate.lastUpdatedAt).getTime();
-                if (timeSinceUpdate < 30 * 60 * 1000) { // 30 minutes for weekly
-                    logger.info('[TELEPORTER WEEKLY] Weekly update already in progress, skipping');
-                    return { success: true, status: 'in_progress' };
+            // First, clean up any stale updates (older than 8 hours)
+            // Weekly updates can take 4-6 hours with retries, so 8 hours is safe buffer
+            const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000);
+            await TeleporterUpdateState.updateMany(
+                {
+                    updateType: 'weekly',
+                    state: 'in_progress',
+                    lastUpdatedAt: { $lt: eightHoursAgo }
+                },
+                {
+                    $set: {
+                        state: 'failed',
+                        error: { message: 'Update timed out (stale cleanup)' },
+                        lastUpdatedAt: new Date()
+                    }
                 }
+            );
 
-                // Mark stale update as failed
-                existingUpdate.state = 'failed';
-                existingUpdate.error = { message: 'Update timed out' };
-                await existingUpdate.save();
-                logger.warn('[TELEPORTER WEEKLY] Marked stale update as failed, proceeding with new update');
+            // Use atomic findOneAndUpdate to prevent race conditions
+            // This will ONLY create/update if no other in_progress update exists
+            const updateState = await TeleporterUpdateState.findOneAndUpdate(
+                {
+                    updateType: 'weekly',
+                    state: { $ne: 'in_progress' } // Only proceed if no in_progress update
+                },
+                {
+                    $set: {
+                        state: 'in_progress',
+                        startedAt: new Date(),
+                        lastUpdatedAt: new Date(),
+                        error: null
+                    }
+                },
+                {
+                    upsert: true,  // Create if doesn't exist
+                    new: true,     // Return the updated document
+                    setDefaultsOnInsert: true
+                }
+            );
+
+            // If findOneAndUpdate returned null, another update is already in progress
+            if (!updateState) {
+                logger.info('[TELEPORTER WEEKLY] Weekly update already in progress (atomic lock), skipping');
+                return { success: true, status: 'in_progress' };
             }
 
-            // Create new update state
-            const updateState = new TeleporterUpdateState({
-                updateType: 'weekly',
-                state: 'in_progress',
-                startedAt: new Date(),
-                lastUpdatedAt: new Date()
-            });
-            await updateState.save();
+            logger.info('[TELEPORTER WEEKLY] Acquired update lock, proceeding with update');
 
             // Fetch and process messages for the last 7 days (168 hours)
             logger.info('[TELEPORTER WEEKLY] Fetching ICM messages for last 7 days (168 hours)...');
