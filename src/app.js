@@ -4,6 +4,7 @@ const cors = require('cors');
 const cron = require('node-cron');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const pLimit = require('p-limit');
 const config = require('./config/config');
 const connectDB = require('./config/db');
 const chainRoutes = require('./routes/chainRoutes');
@@ -140,44 +141,56 @@ const initializeDataUpdates = async () => {
     const dbChains = await Chain.find({ 'registryMetadata.source': 'l1-registry' });
     logger.info(`[GLACIER] Found ${dbChains.length} registry chains to update validators for`);
 
-    for (const dbChain of dbChains) {
-      try {
-        // Only fetch validators, don't update chain metadata
-        if (dbChain.subnetId) {
-          logger.debug(`[GLACIER] Fetching validators for ${dbChain.chainName} (${dbChain.subnetId})`);
-          const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
+    // Process chains in parallel with concurrency limit
+    const initLimit = pLimit(15); // Process 15 chains concurrently
+    const initStartTime = Date.now();
 
-          if (validators && validators.length > 0) {
-            await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
-            logger.info(`[GLACIER] Updated ${validators.length} validators for ${dbChain.chainName}`);
+    const initPromises = dbChains.map(dbChain =>
+      initLimit(async () => {
+        try {
+          // Only fetch validators, don't update chain metadata
+          if (dbChain.subnetId) {
+            logger.debug(`[GLACIER] Fetching validators for ${dbChain.chainName} (${dbChain.subnetId})`);
+            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
+
+            if (validators && validators.length > 0) {
+              await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
+              logger.info(`[GLACIER] Updated ${validators.length} validators for ${dbChain.chainName}`);
+            }
           }
-        }
 
-        // Fetch TPS and metrics if evmChainId is available
-        const chainIdForTps = dbChain.evmChainId;
-        if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-          logger.debug(`[METRICS] Fetching metrics for ${dbChain.chainName} (evmChainId: ${chainIdForTps})`);
+          // Fetch TPS and metrics if evmChainId is available
+          const chainIdForTps = dbChain.evmChainId;
+          if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+            logger.debug(`[METRICS] Fetching metrics for ${dbChain.chainName} (evmChainId: ${chainIdForTps})`);
 
-          // Add initial TPS update
-          await tpsService.updateTpsData(String(chainIdForTps));
-          // Add initial Transaction Count update
-          await tpsService.updateCumulativeTxCount(String(chainIdForTps));
-          // Add initial Gas Used update
-          await gasUsedService.updateGasUsedData(String(chainIdForTps));
-          // Add initial Average Gas Price update
-          await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
-          // Add initial Fees Paid update
-          await feesPaidService.updateFeesPaidData(String(chainIdForTps));
-        } else {
-          logger.debug(`Skipping TPS/TxCount fetch for chain ${dbChain.chainName} - no valid numeric evmChainId`);
+            // Add initial TPS update
+            await tpsService.updateTpsData(String(chainIdForTps));
+            // Add initial Transaction Count update
+            await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+            // Add initial Gas Used update
+            await gasUsedService.updateGasUsedData(String(chainIdForTps));
+            // Add initial Average Gas Price update
+            await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
+            // Add initial Fees Paid update
+            await feesPaidService.updateFeesPaidData(String(chainIdForTps));
+
+            logger.info(`[INIT] Completed all metrics for ${dbChain.chainName}`);
+          } else {
+            logger.debug(`Skipping TPS/TxCount fetch for chain ${dbChain.chainName} - no valid numeric evmChainId`);
+          }
+        } catch (error) {
+          logger.error(`[GLACIER] Error updating validators/metrics for ${dbChain.chainName}:`, {
+            message: error.message,
+            chainId: dbChain.chainId
+          });
         }
-      } catch (error) {
-        logger.error(`[GLACIER] Error updating validators/metrics for ${dbChain.chainName}:`, {
-          message: error.message,
-          chainId: dbChain.chainId
-        });
-      }
-    }
+      })
+    );
+
+    await Promise.allSettled(initPromises);
+    const initDuration = ((Date.now() - initStartTime) / 1000).toFixed(2);
+    logger.info(`[INIT] Completed initial data load for ${dbChains.length} chains in ${initDuration}s`);
 
     // Verify chains were saved
     const savedChains = await Chain.find();
@@ -241,6 +254,7 @@ const initializeDataUpdates = async () => {
 
   // Chain and TPS updates every hour
   cron.schedule(config.cron.chainUpdate, async () => {
+    const cronStartTime = Date.now();
     try {
       logger.info(`[CRON] Starting scheduled validator and metrics update at ${new Date().toISOString()}`);
 
@@ -248,48 +262,64 @@ const initializeDataUpdates = async () => {
       const dbChains = await Chain.find({ 'registryMetadata.source': 'l1-registry' });
       logger.info(`[CRON] Found ${dbChains.length} registry chains to update`);
 
-      for (const dbChain of dbChains) {
-        try {
-          // Only fetch validators from Glacier, don't update chain metadata
-          if (dbChain.subnetId) {
-            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
+      // Process chains in parallel with concurrency limit
+      const limit = pLimit(15); // Process 15 chains concurrently
+      let successCount = 0;
+      let failureCount = 0;
 
-            if (validators && validators.length > 0) {
-              await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
+      const updatePromises = dbChains.map(dbChain =>
+        limit(async () => {
+          try {
+            // Only fetch validators from Glacier, don't update chain metadata
+            if (dbChain.subnetId) {
+              const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
+
+              if (validators && validators.length > 0) {
+                await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
+              }
             }
-          }
 
-          // Fetch TPS and metrics if evmChainId is available
-          const chainIdForTps = dbChain.evmChainId;
-          if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-            // Add TPS update for each chain
-            await tpsService.updateTpsData(String(chainIdForTps));
-            // Add Max TPS update for each chain
-            await maxTpsService.updateMaxTpsData(String(chainIdForTps));
-            // Add Cumulative Transaction Count update for each chain
-            await tpsService.updateCumulativeTxCount(String(chainIdForTps));
-            // Add Daily Transaction Count update for each chain
-            await txCountService.updateTxCountData(String(chainIdForTps));
-            // Add Active Addresses update for each chain
-            await activeAddressesService.updateActiveAddressesData(String(chainIdForTps));
-            // Add Gas Used update for each chain
-            await gasUsedService.updateGasUsedData(String(chainIdForTps));
-            // Add Average Gas Price update for each chain
-            await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
-            // Add Fees Paid update for each chain
-            await feesPaidService.updateFeesPaidData(String(chainIdForTps));
-          }
-        } catch (error) {
-          logger.error(`[CRON] Error updating ${dbChain.chainName}:`, {
-            message: error.message,
-            subnetId: dbChain.subnetId
-          });
-        }
-      }
+            // Fetch TPS and metrics if evmChainId is available
+            const chainIdForTps = dbChain.evmChainId;
+            if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+              // Add TPS update for each chain
+              await tpsService.updateTpsData(String(chainIdForTps));
+              // Add Max TPS update for each chain
+              await maxTpsService.updateMaxTpsData(String(chainIdForTps));
+              // Add Cumulative Transaction Count update for each chain
+              await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+              // Add Daily Transaction Count update for each chain
+              await txCountService.updateTxCountData(String(chainIdForTps));
+              // Add Active Addresses update for each chain
+              await activeAddressesService.updateActiveAddressesData(String(chainIdForTps));
+              // Add Gas Used update for each chain
+              await gasUsedService.updateGasUsedData(String(chainIdForTps));
+              // Add Average Gas Price update for each chain
+              await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
+              // Add Fees Paid update for each chain
+              await feesPaidService.updateFeesPaidData(String(chainIdForTps));
+            }
 
-      logger.info(`[CRON] Updated ${dbChains.length} chains with validators, TPS, Max TPS, TxCount, Active Addresses, Gas Used, Avg Gas Price, and Fees Paid data`);
+            successCount++;
+            logger.info(`[CRON] Successfully updated ${dbChain.chainName} (${successCount}/${dbChains.length})`);
+          } catch (error) {
+            failureCount++;
+            logger.error(`[CRON] Error updating ${dbChain.chainName}:`, {
+              message: error.message,
+              subnetId: dbChain.subnetId
+            });
+          }
+        })
+      );
+
+      await Promise.allSettled(updatePromises);
+
+      const cronDuration = ((Date.now() - cronStartTime) / 1000 / 60).toFixed(2);
+      logger.info(`[CRON] Completed update cycle in ${cronDuration} minutes (${successCount} succeeded, ${failureCount} failed)`);
+      logger.info(`[CRON] Updated ${successCount} chains with validators, TPS, Max TPS, TxCount, Active Addresses, Gas Used, Avg Gas Price, and Fees Paid data`);
     } catch (error) {
-      logger.error('[CRON] Validator/Metrics update failed:', error);
+      const cronDuration = ((Date.now() - cronStartTime) / 1000 / 60).toFixed(2);
+      logger.error(`[CRON] Validator/Metrics update failed after ${cronDuration} minutes:`, error);
     }
   });
 
