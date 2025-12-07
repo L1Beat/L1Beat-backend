@@ -54,7 +54,7 @@ class TeleporterService {
                 startTime,
                 endTime,
                 network: 'mainnet',
-                pageSize: 100
+                pageSize: 50 // Reduced from 100 to prevent timeouts
             };
 
             logger.info(`[TELEPORTER ${updateLabel}] Fetching ICM messages from last ${hoursAgo} hours`, {
