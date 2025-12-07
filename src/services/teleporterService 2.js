@@ -8,38 +8,31 @@ class TeleporterService {
         this.GLACIER_API_BASE = process.env.GLACIER_API_BASE || config.api.glacier.baseUrl;
         this.GLACIER_API_KEY = process.env.GLACIER_API_KEY;
         this.UPDATE_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
-        this.TIMEOUT_DAILY = 120000; // 120 seconds for daily updates (API is slow)
-        this.TIMEOUT_WEEKLY = 120000; // 120 seconds for weekly updates
-
+        this.TIMEOUT = 30000; // 30 seconds
+        
         if (!this.GLACIER_API_KEY) {
             logger.warn('GLACIER_API_KEY not found in environment variables');
         }
-
+        
         if (!this.GLACIER_API_BASE) {
             logger.error('GLACIER_API_BASE not configured');
         }
-
+        
         logger.info('TeleporterService initialized', {
             hasApiKey: !!this.GLACIER_API_KEY,
-            apiBase: this.GLACIER_API_BASE,
-            timeouts: {
-                daily: `${this.TIMEOUT_DAILY / 1000}s`,
-                weekly: `${this.TIMEOUT_WEEKLY / 1000}s`
-            }
+            apiBase: this.GLACIER_API_BASE
         });
     }
 
     /**
      * Fetch ICM messages from Glacier API
      * @param {number} hoursAgo - How many hours ago to start fetching from
-     * @param {string} updateType - Type of update ('daily' or 'weekly') for logging
      * @returns {Promise<Array>} Array of messages
      */
-    async fetchICMMessages(hoursAgo = 24, updateType = 'daily') {
+    async fetchICMMessages(hoursAgo = 24) {
         try {
             const endTime = Math.floor(Date.now() / 1000);
             const startTime = endTime - (hoursAgo * 60 * 60);
-            const updateLabel = updateType.toUpperCase();
 
             const headers = {
                 'Accept': 'application/json',
@@ -57,12 +50,11 @@ class TeleporterService {
                 pageSize: 100
             };
 
-            logger.info(`[TELEPORTER ${updateLabel}] Fetching ICM messages from last ${hoursAgo} hours`, {
-                startTime,
+            logger.info(`Fetching ICM messages from ${hoursAgo} hours ago`, { 
+                startTime, 
                 endTime,
                 startTimeISO: new Date(startTime * 1000).toISOString(),
-                endTimeISO: new Date(endTime * 1000).toISOString(),
-                timeRange: `${hoursAgo} hours (${Math.round(hoursAgo / 24)} days)`
+                endTimeISO: new Date(endTime * 1000).toISOString()
             });
 
             let allMessages = [];
@@ -70,64 +62,20 @@ class TeleporterService {
             let pageCount = 0;
             const maxPages = 1000; // Higher safety limit
             let reachedTimeLimit = false;
-            const fetchStartTime = Date.now();
 
             do {
                 pageCount++;
-                const pageStartTime = Date.now();
-
+                
                 if (nextPageToken) {
                     params.pageToken = nextPageToken;
                 }
 
-                // Use longer timeout for weekly updates
-                const timeout = updateType === 'weekly' ? this.TIMEOUT_WEEKLY : this.TIMEOUT_DAILY;
+                const response = await axios.get(`${this.GLACIER_API_BASE}/icm/messages`, {
+                    headers,
+                    params,
+                    timeout: this.TIMEOUT
+                });
 
-                // Retry logic for timeout errors
-                let response;
-                let retryCount = 0;
-                const maxRetries = 3;
-
-                while (retryCount <= maxRetries) {
-                    try {
-                        response = await axios.get(`${this.GLACIER_API_BASE}/icm/messages`, {
-                            headers,
-                            params,
-                            timeout
-                        });
-                        break; // Success, exit retry loop
-                    } catch (error) {
-                        // Retry on timeout, network errors, or temporary server errors
-                        const isNetworkError = error.code === 'ECONNABORTED' ||
-                                              error.code === 'ECONNRESET' ||
-                                              error.code === 'ETIMEDOUT' ||
-                                              error.code === 'ENOTFOUND' ||
-                                              error.message?.includes('socket hang up');
-
-                        const isServerError = error.response?.status === 502 || // Bad Gateway
-                                            error.response?.status === 503 || // Service Unavailable
-                                            error.response?.status === 504;   // Gateway Timeout
-
-                        const isRetryableError = isNetworkError || isServerError;
-
-                        if (isRetryableError && retryCount < maxRetries) {
-                            retryCount++;
-                            const waitTime = Math.min(1000 * Math.pow(2, retryCount), 10000); // Exponential backoff, max 10s
-                            const errorType = error.response?.status ? `HTTP ${error.response.status}` : error.code || 'network error';
-                            logger.warn(`[TELEPORTER ${updateLabel}] Page ${pageCount} ${errorType} (attempt ${retryCount}/${maxRetries + 1}), retrying in ${waitTime / 1000}s...`, {
-                                error: error.message,
-                                status: error.response?.status,
-                                timeout: `${timeout / 1000}s`,
-                                pageToken: nextPageToken ? 'present' : 'none'
-                            });
-                            await new Promise(resolve => setTimeout(resolve, waitTime));
-                        } else {
-                            throw error; // Throw if not retryable or max retries reached
-                        }
-                    }
-                }
-
-                const pageFetchTime = ((Date.now() - pageStartTime) / 1000).toFixed(2);
                 const messages = response.data?.messages || [];
                 let validMessages = [];
 
@@ -159,7 +107,7 @@ class TeleporterService {
                     } else {
                         // Found a message older than our time window, stop pagination
                         reachedTimeLimit = true;
-                        logger.info(`[TELEPORTER ${updateLabel}] Found message older than ${hoursAgo} hours, stopping pagination`, {
+                        logger.info(`Found message older than ${hoursAgo} hours, stopping pagination`, {
                             messageTimestamp: new Date(timestampInSeconds * 1000).toISOString(),
                             startTime: new Date(startTime * 1000).toISOString(),
                             page: pageCount,
@@ -173,32 +121,21 @@ class TeleporterService {
                 allMessages = allMessages.concat(validMessages);
                 nextPageToken = response.data?.nextPageToken;
 
-                // Calculate estimated time remaining for weekly updates
-                const elapsedTime = (Date.now() - fetchStartTime) / 1000;
-                const avgTimePerPage = elapsedTime / pageCount;
-                const estimatedPagesRemaining = updateType === 'weekly' ? Math.max(0, (hoursAgo / 24 * 100) - pageCount) : 0;
-                const estimatedTimeRemaining = estimatedPagesRemaining * avgTimePerPage / 60;
-
-                logger.info(`[TELEPORTER ${updateLabel}] Page ${pageCount} fetched in ${pageFetchTime}s: ${messages.length} messages (${validMessages.length} valid)`, {
+                logger.info(`Fetched page ${pageCount}, got ${messages.length} messages (${validMessages.length} valid)`, {
                     totalMessages: allMessages.length,
                     hasNextPage: !!nextPageToken,
-                    reachedTimeLimit,
-                    avgTimePerPage: `${avgTimePerPage.toFixed(2)}s`,
-                    ...(updateType === 'weekly' && estimatedPagesRemaining > 0 ? {
-                        estimatedPagesRemaining,
-                        estimatedTimeRemaining: `~${Math.ceil(estimatedTimeRemaining)} min`
-                    } : {})
+                    reachedTimeLimit
                 });
 
                 // If we reached the time limit, stop pagination
                 if (reachedTimeLimit) {
-                    logger.info(`[TELEPORTER ${updateLabel}] Reached time limit (${hoursAgo} hours), stopping pagination`);
+                    logger.info(`Reached time limit (${hoursAgo} hours), stopping pagination`);
                     break;
                 }
 
                 // Safety check to prevent infinite loops (should rarely be hit now)
                 if (pageCount >= maxPages) {
-                    logger.warn(`[TELEPORTER ${updateLabel}] Reached maximum page limit (${maxPages}), stopping pagination`);
+                    logger.warn(`Reached maximum page limit (${maxPages}), stopping pagination`);
                     break;
                 }
 
@@ -209,28 +146,17 @@ class TeleporterService {
 
             } while (nextPageToken);
 
-            const totalFetchTime = ((Date.now() - fetchStartTime) / 1000 / 60).toFixed(2);
-            logger.info(`[TELEPORTER ${updateLabel}] ✅ Completed fetching: ${allMessages.length} messages from ${pageCount} pages in ${totalFetchTime} minutes`, {
+            logger.info(`Completed fetching ICM messages: ${allMessages.length} total messages from ${pageCount} pages`, {
                 reachedTimeLimit,
-                hitPageLimit: pageCount >= maxPages,
-                avgTimePerPage: `${((Date.now() - fetchStartTime) / 1000 / pageCount).toFixed(2)}s`
+                hitPageLimit: pageCount >= maxPages
             });
             return allMessages;
 
         } catch (error) {
-            const updateLabel = updateType ? updateType.toUpperCase() : 'UNKNOWN';
-            // Safely access pageCount and allMessages in case error occurred before they were initialized
-            const currentPageCount = typeof pageCount !== 'undefined' ? pageCount : 0;
-            const currentMessageCount = typeof allMessages !== 'undefined' ? allMessages.length : 0;
-
-            logger.error(`[TELEPORTER ${updateLabel}] Error fetching ICM messages:`, {
+            logger.error('Error fetching ICM messages:', {
                 message: error.message,
-                code: error.code,
                 status: error.response?.status,
-                statusText: error.response?.statusText,
-                isTimeout: error.code === 'ECONNABORTED',
-                pageCount: currentPageCount,
-                totalMessages: currentMessageCount
+                statusText: error.response?.statusText
             });
             throw error;
         }
@@ -252,7 +178,7 @@ class TeleporterService {
             
             // Fetch chain data from our own API
             const response = await axios.get(`http://localhost:${process.env.PORT || 5001}/api/chains`, {
-                timeout: this.TIMEOUT_DAILY, // Use daily timeout for internal API calls
+                timeout: this.TIMEOUT,
                 headers: {
                     'Accept': 'application/json',
                     'User-Agent': 'l1beat-backend-internal'
@@ -328,70 +254,38 @@ class TeleporterService {
         try {
             logger.info('[TELEPORTER DAILY] Starting daily teleporter data update (last 24 hours)');
 
-            // First, clean up any stale updates (older than 60 minutes)
-            // Daily updates typically complete in 30-40 minutes, so 60 min is safe buffer
-            const sixtyMinutesAgo = new Date(Date.now() - 60 * 60 * 1000);
-            await TeleporterUpdateState.updateMany(
-                {
-                    updateType: 'daily',
-                    state: 'in_progress',
-                    lastUpdatedAt: { $lt: sixtyMinutesAgo }
-                },
-                {
-                    $set: {
-                        state: 'failed',
-                        error: { message: 'Update timed out (stale cleanup)' },
-                        lastUpdatedAt: new Date()
-                    }
+            // Check if update is already in progress
+            const existingUpdate = await TeleporterUpdateState.findOne({
+                updateType: 'daily',
+                state: 'in_progress'
+            });
+
+            if (existingUpdate) {
+                const timeSinceUpdate = Date.now() - new Date(existingUpdate.lastUpdatedAt).getTime();
+                if (timeSinceUpdate < 10 * 60 * 1000) { // 10 minutes
+                    logger.info('[TELEPORTER DAILY] Update already in progress, skipping');
+                    return { success: true, status: 'in_progress' };
                 }
-            );
 
-            // Ensure state document exists (idempotent operation)
-            await TeleporterUpdateState.updateOne(
-                { updateType: 'daily' },
-                {
-                    $setOnInsert: {
-                        updateType: 'daily',
-                        state: 'idle',
-                        startedAt: null,
-                        lastUpdatedAt: new Date(),
-                        error: null
-                    }
-                },
-                { upsert: true }
-            );
-
-            // Try to atomically acquire the lock (without upsert to prevent duplicate documents)
-            const updateState = await TeleporterUpdateState.findOneAndUpdate(
-                {
-                    updateType: 'daily',
-                    state: { $ne: 'in_progress' } // Only proceed if not already in_progress
-                },
-                {
-                    $set: {
-                        state: 'in_progress',
-                        startedAt: new Date(),
-                        lastUpdatedAt: new Date(),
-                        error: null
-                    }
-                },
-                {
-                    new: true,     // Return the updated document
-                    returnDocument: 'after'
-                }
-            );
-
-            // If findOneAndUpdate returned null, lock acquisition failed (another process has the lock)
-            if (!updateState) {
-                logger.info('[TELEPORTER DAILY] Update already in progress (atomic lock), skipping');
-                return { success: true, status: 'in_progress' };
+                // Mark stale update as failed
+                existingUpdate.state = 'failed';
+                existingUpdate.error = { message: 'Update timed out' };
+                await existingUpdate.save();
+                logger.warn('[TELEPORTER DAILY] Marked stale update as failed, proceeding with new update');
             }
 
-            logger.info('[TELEPORTER DAILY] Acquired update lock, proceeding with update');
+            // Create new update state
+            const updateState = new TeleporterUpdateState({
+                updateType: 'daily',
+                state: 'in_progress',
+                startedAt: new Date(),
+                lastUpdatedAt: new Date()
+            });
+            await updateState.save();
 
             logger.info('[TELEPORTER DAILY] Fetching ICM messages for last 24 hours...');
             // Fetch and process messages
-            const messages = await this.fetchICMMessages(24, 'daily');
+            const messages = await this.fetchICMMessages(24);
             logger.info(`[TELEPORTER DAILY] Fetched ${messages.length} raw messages from Glacier API`);
             
             const processedData = await this.processMessages(messages);
@@ -477,70 +371,38 @@ class TeleporterService {
         try {
             logger.info('[TELEPORTER WEEKLY] Starting weekly teleporter data update (last 7 days)');
 
-            // First, clean up any stale updates (older than 8 hours)
-            // Weekly updates can take 4-6 hours with retries, so 8 hours is safe buffer
-            const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000);
-            await TeleporterUpdateState.updateMany(
-                {
-                    updateType: 'weekly',
-                    state: 'in_progress',
-                    lastUpdatedAt: { $lt: eightHoursAgo }
-                },
-                {
-                    $set: {
-                        state: 'failed',
-                        error: { message: 'Update timed out (stale cleanup)' },
-                        lastUpdatedAt: new Date()
-                    }
+            // Check if update is already in progress
+            const existingUpdate = await TeleporterUpdateState.findOne({
+                updateType: 'weekly',
+                state: 'in_progress'
+            });
+
+            if (existingUpdate) {
+                const timeSinceUpdate = Date.now() - new Date(existingUpdate.lastUpdatedAt).getTime();
+                if (timeSinceUpdate < 30 * 60 * 1000) { // 30 minutes for weekly
+                    logger.info('[TELEPORTER WEEKLY] Weekly update already in progress, skipping');
+                    return { success: true, status: 'in_progress' };
                 }
-            );
 
-            // Ensure state document exists (idempotent operation)
-            await TeleporterUpdateState.updateOne(
-                { updateType: 'weekly' },
-                {
-                    $setOnInsert: {
-                        updateType: 'weekly',
-                        state: 'idle',
-                        startedAt: null,
-                        lastUpdatedAt: new Date(),
-                        error: null
-                    }
-                },
-                { upsert: true }
-            );
-
-            // Try to atomically acquire the lock (without upsert to prevent duplicate documents)
-            const updateState = await TeleporterUpdateState.findOneAndUpdate(
-                {
-                    updateType: 'weekly',
-                    state: { $ne: 'in_progress' } // Only proceed if not already in_progress
-                },
-                {
-                    $set: {
-                        state: 'in_progress',
-                        startedAt: new Date(),
-                        lastUpdatedAt: new Date(),
-                        error: null
-                    }
-                },
-                {
-                    new: true,     // Return the updated document
-                    returnDocument: 'after'
-                }
-            );
-
-            // If findOneAndUpdate returned null, lock acquisition failed (another process has the lock)
-            if (!updateState) {
-                logger.info('[TELEPORTER WEEKLY] Weekly update already in progress (atomic lock), skipping');
-                return { success: true, status: 'in_progress' };
+                // Mark stale update as failed
+                existingUpdate.state = 'failed';
+                existingUpdate.error = { message: 'Update timed out' };
+                await existingUpdate.save();
+                logger.warn('[TELEPORTER WEEKLY] Marked stale update as failed, proceeding with new update');
             }
 
-            logger.info('[TELEPORTER WEEKLY] Acquired update lock, proceeding with update');
+            // Create new update state
+            const updateState = new TeleporterUpdateState({
+                updateType: 'weekly',
+                state: 'in_progress',
+                startedAt: new Date(),
+                lastUpdatedAt: new Date()
+            });
+            await updateState.save();
 
             // Fetch and process messages for the last 7 days (168 hours)
             logger.info('[TELEPORTER WEEKLY] Fetching ICM messages for last 7 days (168 hours)...');
-            const messages = await this.fetchICMMessages(168, 'weekly'); // 7 * 24 = 168 hours
+            const messages = await this.fetchICMMessages(168); // 7 * 24 = 168 hours
             logger.info(`[TELEPORTER WEEKLY] Fetched ${messages.length} raw messages from Glacier API`);
             
             const processedData = await this.processMessages(messages);
