@@ -8,8 +8,8 @@ class TeleporterService {
         this.GLACIER_API_BASE = process.env.GLACIER_API_BASE || config.api.glacier.baseUrl;
         this.GLACIER_API_KEY = process.env.GLACIER_API_KEY;
         this.UPDATE_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
-        this.TIMEOUT_DAILY = 60000; // 60 seconds for daily updates (pages taking 18-29s, need buffer)
-        this.TIMEOUT_WEEKLY = 90000; // 90 seconds for weekly updates (pages taking 27-30s, need more buffer)
+        this.TIMEOUT_DAILY = 120000; // 120 seconds for daily updates (API is slow)
+        this.TIMEOUT_WEEKLY = 120000; // 120 seconds for weekly updates
 
         if (!this.GLACIER_API_KEY) {
             logger.warn('GLACIER_API_KEY not found in environment variables');
@@ -54,7 +54,7 @@ class TeleporterService {
                 startTime,
                 endTime,
                 network: 'mainnet',
-                pageSize: 50 // Reduced from 100 to prevent timeouts
+                pageSize: 25 // Reduced to 25 to prevent timeouts
             };
 
             logger.info(`[TELEPORTER ${updateLabel}] Fetching ICM messages from last ${hoursAgo} hours`, {
