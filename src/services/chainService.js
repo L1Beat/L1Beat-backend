@@ -281,33 +281,48 @@ class ChainService {
                 url.searchParams.append('subnetId', subnetId);
                 url.searchParams.append('pageSize', '100');
                 url.searchParams.append('validationStatus', 'active');
-                
+
                 if (nextPageToken) {
                     url.searchParams.append('pageToken', nextPageToken);
                 }
 
-                logger.debug(`Fetching validators from primary endpoint: ${url.toString()}`);
+                logger.info(`[VALIDATOR FETCH] Trying Glacier /validators for subnet ${subnetId}`);
+                logger.debug(`[VALIDATOR FETCH] URL: ${url.toString()}`);
+
                 const response = await fetch(url.toString(), {
                     headers: {
                         'Accept': 'application/json',
                         'x-glacier-api-key': config.api.glacier.apiKey
                     }
                 });
+
                 if (!response.ok) {
-                    logger.warn(`Primary Glacier API request failed for subnet ${subnetId}, trying L1Validators endpoint`);
+                    logger.warn(`[VALIDATOR FETCH] Glacier /validators failed for subnet ${subnetId}`, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        isPrimaryNetwork: subnetId === '11111111111111111111111111111111LpoYY'
+                    });
                     break; // Exit loop and try secondary endpoint
                 }
 
                 const data = await response.json();
-                allValidators = [...allValidators, ...data.validators];
+                const validatorCount = (data.validators || []).length;
+                allValidators = [...allValidators, ...(data.validators || [])];
                 nextPageToken = data.nextPageToken;
-                
-                logger.debug(`Fetched ${data.validators.length} validators from primary endpoint. Next page token: ${nextPageToken}`);
+
+                logger.info(`[VALIDATOR FETCH] Glacier /validators returned ${validatorCount} validators for subnet ${subnetId}`, {
+                    totalSoFar: allValidators.length,
+                    hasNextPage: !!nextPageToken,
+                    isPrimaryNetwork: subnetId === '11111111111111111111111111111111LpoYY'
+                });
             } while (nextPageToken);
 
             // If no validators found from primary endpoint, try L1Validators endpoint
             if (allValidators.length === 0) {
-                logger.info(`No validators found from primary endpoint for subnet ${subnetId}, trying L1Validators endpoint`);
+                logger.info(`[VALIDATOR FETCH] No validators from Glacier /validators, trying /l1-validators`, {
+                    subnetId,
+                    isPrimaryNetwork: subnetId === '11111111111111111111111111111111LpoYY'
+                });
                 
                 // Try L1Validators endpoint with subnetId parameter
                 try {
@@ -315,15 +330,23 @@ class ChainService {
                     const secondaryUrl = new URL(`${config.api.glacier.baseUrl}${l1ValidatorsEndpoint}`);
                     secondaryUrl.searchParams.append('subnetId', subnetId);
                     secondaryUrl.searchParams.append('pageSize', '100');
-                    
-                    logger.debug(`Fetching validators from L1Validators endpoint: ${secondaryUrl.toString()}`);
+
+                    logger.info(`[VALIDATOR FETCH] Trying Glacier /l1-validators for subnet ${subnetId}`);
+                    logger.debug(`[VALIDATOR FETCH] URL: ${secondaryUrl.toString()}`);
+
                     const response = await fetch(secondaryUrl.toString(), {
                         headers: {
                             'Accept': 'application/json',
                             'x-glacier-api-key': config.api.glacier.apiKey
                         }
                     });
+
                     if (!response.ok) {
+                        logger.warn(`[VALIDATOR FETCH] Glacier /l1-validators failed for subnet ${subnetId}`, {
+                            status: response.status,
+                            statusText: response.statusText,
+                            isPrimaryNetwork: subnetId === '11111111111111111111111111111111LpoYY'
+                        });
                         throw new Error(`L1Validators API request failed with status ${response.status}`);
                     }
                     
@@ -342,8 +365,11 @@ class ChainService {
                     }));
                     
                     allValidators = transformedValidators;
-                    
-                    logger.info(`Fetched ${allValidators.length} validators from L1Validators endpoint`);
+
+                    logger.info(`[VALIDATOR FETCH] Glacier /l1-validators returned ${allValidators.length} validators`, {
+                        subnetId,
+                        isPrimaryNetwork: subnetId === '11111111111111111111111111111111LpoYY'
+                    });
                     
                     // If there's a nextPageToken, we should handle pagination for L1Validators too
                     let l1NextPageToken = data.nextPageToken;
@@ -387,15 +413,8 @@ class ChainService {
                     logger.error(`Error fetching validators from L1Validators endpoint for subnet ${subnetId}:`,
                         { error: secondaryError.message });
 
-                    // If L1Validators endpoint also fails, try SnowPeer
-                    logger.info(`Trying SnowPeer as fallback for subnet ${subnetId}`);
-                    const snowpeerValidators = await this.fetchSnowPeerValidators(subnetId, chainId);
-
-                    if (snowpeerValidators.length > 0) {
-                        return snowpeerValidators;
-                    }
-
-                    // If SnowPeer also fails, try alternative validator source
+                    // Try alternative validator source as fallback
+                    logger.info(`Both Glacier endpoints failed, trying alternative validators for subnet ${subnetId}`);
                     return await this.fetchAlternativeValidators(chainId);
                 }
             }
@@ -406,15 +425,8 @@ class ChainService {
         } catch (error) {
             logger.error(`Error fetching validators for subnet ${subnetId}:`, { error: error.message });
 
-            // If any error occurs, try SnowPeer first
-            logger.info(`Error occurred, trying SnowPeer as fallback for subnet ${subnetId}`);
-            const snowpeerValidators = await this.fetchSnowPeerValidators(subnetId, chainId);
-
-            if (snowpeerValidators.length > 0) {
-                return snowpeerValidators;
-            }
-
-            // If SnowPeer also fails, try the alternative method
+            // Try the alternative method as fallback
+            logger.info(`Error occurred, trying alternative validators for subnet ${subnetId}`);
             return await this.fetchAlternativeValidators(chainId);
         }
     }
