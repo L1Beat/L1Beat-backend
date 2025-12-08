@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
 
-const REGISTRY_PATH = path.join(__dirname, '../../l1-registry/data');
+const registry = require('@l1beat/l1-registry');
+const REGISTRY_PATH = registry.getDataPath();
 
 class RegistryService {
   constructor() {
