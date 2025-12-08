@@ -33,9 +33,10 @@ class TeleporterService {
      * Fetch ICM messages from Glacier API
      * @param {number} hoursAgo - How many hours ago to start fetching from
      * @param {string} updateType - Type of update ('daily' or 'weekly') for logging
+     * @param {Function} ownershipCheck - Optional async function that returns false if we should stop
      * @returns {Promise<Array>} Array of messages
      */
-    async fetchICMMessages(hoursAgo = 24, updateType = 'daily') {
+    async fetchICMMessages(hoursAgo = 24, updateType = 'daily', ownershipCheck = null) {
         try {
             const endTime = Math.floor(Date.now() / 1000);
             const startTime = endTime - (hoursAgo * 60 * 60);
@@ -73,6 +74,15 @@ class TeleporterService {
             const fetchStartTime = Date.now();
 
             do {
+                // Check if we still own the lock
+                if (ownershipCheck) {
+                    const stillOwnsLock = await ownershipCheck();
+                    if (!stillOwnsLock) {
+                        logger.warn(`[TELEPORTER ${updateLabel}] Lost ownership of lock, aborting update`);
+                        throw new Error('Lost ownership of update lock');
+                    }
+                }
+
                 pageCount++;
                 const pageStartTime = Date.now();
 
@@ -330,6 +340,15 @@ class TeleporterService {
         try {
             logger.info('[TELEPORTER DAILY] Starting daily teleporter data update (last 24 hours)');
 
+            // Clean up duplicates first
+            const duplicates = await TeleporterUpdateState.find({ updateType: 'daily' }).sort({ startedAt: -1 });
+            if (duplicates.length > 1) {
+                logger.warn(`[TELEPORTER DAILY] Found ${duplicates.length} duplicate state documents, cleaning up...`);
+                // Keep the most recent one, delete others
+                const idsToDelete = duplicates.slice(1).map(d => d._id);
+                await TeleporterUpdateState.deleteMany({ _id: { $in: idsToDelete } });
+            }
+
             // First, clean up any stale updates (older than 60 minutes)
             // Daily updates typically complete in 30-40 minutes, so 60 min is safe buffer
             const sixtyMinutesAgo = new Date(Date.now() - 60 * 60 * 1000);
@@ -349,19 +368,24 @@ class TeleporterService {
             );
 
             // Ensure state document exists (idempotent operation)
-            await TeleporterUpdateState.updateOne(
-                { updateType: 'daily' },
-                {
-                    $setOnInsert: {
-                        updateType: 'daily',
-                        state: 'idle',
-                        startedAt: null,
-                        lastUpdatedAt: new Date(),
-                        error: null
-                    }
-                },
-                { upsert: true }
-            );
+            try {
+                await TeleporterUpdateState.updateOne(
+                    { updateType: 'daily' },
+                    {
+                        $setOnInsert: {
+                            updateType: 'daily',
+                            state: 'idle',
+                            startedAt: null,
+                            lastUpdatedAt: new Date(),
+                            error: null
+                        }
+                    },
+                    { upsert: true }
+                );
+            } catch (err) {
+                // Ignore duplicate key error if race condition occurs
+                if (err.code !== 11000) throw err;
+            }
 
             // Try to atomically acquire the lock (without upsert to prevent duplicate documents)
             const updateState = await TeleporterUpdateState.findOneAndUpdate(
@@ -391,9 +415,21 @@ class TeleporterService {
 
             logger.info('[TELEPORTER DAILY] Acquired update lock, proceeding with update');
 
+            const ownershipCheck = async () => {
+                try {
+                    const currentStatus = await TeleporterUpdateState.findOne({ updateType: 'daily' });
+                    if (!currentStatus || currentStatus.state !== 'in_progress') return false;
+                    // Allow 2s drift
+                    return Math.abs(currentStatus.startedAt.getTime() - updateState.startedAt.getTime()) < 2000;
+                } catch (err) {
+                    logger.error('[TELEPORTER DAILY] Error in ownership check:', err);
+                    return true;
+                }
+            };
+
             logger.info('[TELEPORTER DAILY] Fetching ICM messages for last 24 hours...');
             // Fetch and process messages
-            const messages = await this.fetchICMMessages(24, 'daily');
+            const messages = await this.fetchICMMessages(24, 'daily', ownershipCheck);
             logger.info(`[TELEPORTER DAILY] Fetched ${messages.length} raw messages from Glacier API`);
             
             const processedData = await this.processMessages(messages);
@@ -460,12 +496,21 @@ class TeleporterService {
             logger.error('[TELEPORTER DAILY] ❌ Error updating daily data:', error);
 
             // Update state to failed
-            const updateState = await TeleporterUpdateState.findOne({ updateType: 'daily' });
-            if (updateState) {
-                updateState.state = 'failed';
-                updateState.error = { message: error.message };
-                updateState.lastUpdatedAt = new Date();
-                await updateState.save();
+            try {
+                // If the error IS "Lost ownership", we definitely shouldn't touch the DB.
+                if (error.message === 'Lost ownership of update lock') {
+                    logger.warn('[TELEPORTER DAILY] Not updating DB state as lock was lost');
+                } else {
+                    const updateState = await TeleporterUpdateState.findOne({ updateType: 'daily' });
+                    if (updateState && updateState.state === 'in_progress') {
+                        updateState.state = 'failed';
+                        updateState.error = { message: error.message };
+                        updateState.lastUpdatedAt = new Date();
+                        await updateState.save();
+                    }
+                }
+            } catch (dbError) {
+                logger.error('[TELEPORTER DAILY] Error updating failure state:', dbError);
             }
 
             throw error;
@@ -478,6 +523,15 @@ class TeleporterService {
     async updateWeeklyData() {
         try {
             logger.info('[TELEPORTER WEEKLY] Starting weekly teleporter data update (last 7 days)');
+
+            // Clean up duplicates first
+            const duplicates = await TeleporterUpdateState.find({ updateType: 'weekly' }).sort({ startedAt: -1 });
+            if (duplicates.length > 1) {
+                logger.warn(`[TELEPORTER WEEKLY] Found ${duplicates.length} duplicate state documents, cleaning up...`);
+                // Keep the most recent one, delete others
+                const idsToDelete = duplicates.slice(1).map(d => d._id);
+                await TeleporterUpdateState.deleteMany({ _id: { $in: idsToDelete } });
+            }
 
             // First, clean up any stale updates (older than 8 hours)
             // Weekly updates can take 4-6 hours with retries, so 8 hours is safe buffer
@@ -498,19 +552,24 @@ class TeleporterService {
             );
 
             // Ensure state document exists (idempotent operation)
-            await TeleporterUpdateState.updateOne(
-                { updateType: 'weekly' },
-                {
-                    $setOnInsert: {
-                        updateType: 'weekly',
-                        state: 'idle',
-                        startedAt: null,
-                        lastUpdatedAt: new Date(),
-                        error: null
-                    }
-                },
-                { upsert: true }
-            );
+            try {
+                await TeleporterUpdateState.updateOne(
+                    { updateType: 'weekly' },
+                    {
+                        $setOnInsert: {
+                            updateType: 'weekly',
+                            state: 'idle',
+                            startedAt: null,
+                            lastUpdatedAt: new Date(),
+                            error: null
+                        }
+                    },
+                    { upsert: true }
+                );
+            } catch (err) {
+                // Ignore duplicate key error if race condition occurs
+                if (err.code !== 11000) throw err;
+            }
 
             // Try to atomically acquire the lock (without upsert to prevent duplicate documents)
             const updateState = await TeleporterUpdateState.findOneAndUpdate(
@@ -540,9 +599,21 @@ class TeleporterService {
 
             logger.info('[TELEPORTER WEEKLY] Acquired update lock, proceeding with update');
 
+            const ownershipCheck = async () => {
+                try {
+                    const currentStatus = await TeleporterUpdateState.findOne({ updateType: 'weekly' });
+                    if (!currentStatus || currentStatus.state !== 'in_progress') return false;
+                    // Allow 2s drift
+                    return Math.abs(currentStatus.startedAt.getTime() - updateState.startedAt.getTime()) < 2000;
+                } catch (err) {
+                    logger.error('[TELEPORTER WEEKLY] Error in ownership check:', err);
+                    return true;
+                }
+            };
+
             // Fetch and process messages for the last 7 days (168 hours)
             logger.info('[TELEPORTER WEEKLY] Fetching ICM messages for last 7 days (168 hours)...');
-            const messages = await this.fetchICMMessages(168, 'weekly'); // 7 * 24 = 168 hours
+            const messages = await this.fetchICMMessages(168, 'weekly', ownershipCheck); // 7 * 24 = 168 hours
             logger.info(`[TELEPORTER WEEKLY] Fetched ${messages.length} raw messages from Glacier API`);
             
             const processedData = await this.processMessages(messages);
@@ -577,12 +648,21 @@ class TeleporterService {
             logger.error('[TELEPORTER WEEKLY] ❌ Error updating weekly data:', error);
 
             // Update state to failed
-            const updateState = await TeleporterUpdateState.findOne({ updateType: 'weekly' });
-            if (updateState) {
-                updateState.state = 'failed';
-                updateState.error = { message: error.message };
-                updateState.lastUpdatedAt = new Date();
-                await updateState.save();
+            try {
+                // If the error IS "Lost ownership", we definitely shouldn't touch the DB.
+                if (error.message === 'Lost ownership of update lock') {
+                    logger.warn('[TELEPORTER WEEKLY] Not updating DB state as lock was lost');
+                } else {
+                    const updateState = await TeleporterUpdateState.findOne({ updateType: 'weekly' });
+                    if (updateState && updateState.state === 'in_progress') {
+                        updateState.state = 'failed';
+                        updateState.error = { message: error.message };
+                        updateState.lastUpdatedAt = new Date();
+                        await updateState.save();
+                    }
+                }
+            } catch (dbError) {
+                logger.error('[TELEPORTER WEEKLY] Error updating failure state:', dbError);
             }
 
             throw error;
