@@ -389,6 +389,9 @@ const initializeDataUpdates = async () => {
 const isTestMode = process.env.NODE_ENV === 'test';
 connectDB().then(async () => {
   if (!isTestMode) {
+    // Ensure unique indexes exist (migrates old non-unique collections)
+    await ensureTeleporterUniqueIndex();
+
     // First, check for and fix any stale teleporter updates
     await fixStaleUpdates();
 
@@ -398,6 +401,53 @@ connectDB().then(async () => {
     logger.info('Skipping background data updates in test mode');
   }
 });
+
+/**
+ * Helper function to ensure unique index on updateType exists
+ * This handles migration for existing collections that might have duplicates
+ */
+async function ensureTeleporterUniqueIndex() {
+  try {
+    const { TeleporterUpdateState } = require('./models/teleporterMessage');
+    logger.info('Verifying TeleporterUpdateState unique index...');
+
+    // 1. Find and remove duplicates
+    const duplicates = await TeleporterUpdateState.aggregate([
+      {
+        $group: {
+          _id: "$updateType",
+          count: { $sum: 1 },
+          ids: { $push: "$_id" }
+        }
+      },
+      {
+        $match: {
+          count: { $gt: 1 }
+        }
+      }
+    ]);
+
+    for (const dup of duplicates) {
+      logger.warn(`Found duplicates for updateType ${dup._id}, cleaning up...`);
+      // Keep the most recently updated one
+      const docs = await TeleporterUpdateState.find({ _id: { $in: dup.ids } })
+        .sort({ lastUpdatedAt: -1 });
+      
+      const [keep, ...remove] = docs;
+      if (remove.length > 0) {
+        await TeleporterUpdateState.deleteMany({ _id: { $in: remove.map(d => d._id) } });
+        logger.info(`Removed ${remove.length} duplicate documents for ${dup._id}`);
+      }
+    }
+
+    // 2. Explicitly sync indexes to ensure unique constraint is applied
+    await TeleporterUpdateState.syncIndexes();
+    logger.info('TeleporterUpdateState indexes synced successfully');
+
+  } catch (error) {
+    logger.error('Error ensuring teleporter unique index:', error);
+  }
+}
 
 /**
  * Helper function to check for and fix any stale teleporter updates
