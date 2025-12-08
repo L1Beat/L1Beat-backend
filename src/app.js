@@ -151,7 +151,7 @@ const initializeDataUpdates = async () => {
           // Only fetch validators, don't update chain metadata
           if (dbChain.subnetId) {
             logger.debug(`[GLACIER] Fetching validators for ${dbChain.chainName} (${dbChain.subnetId})`);
-            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
+            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.evmChainId);
 
             if (validators && validators.length > 0) {
               await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
@@ -276,7 +276,7 @@ const initializeDataUpdates = async () => {
           try {
             // Only fetch validators from Glacier, don't update chain metadata
             if (dbChain.subnetId) {
-              const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
+              const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.evmChainId);
 
               if (validators && validators.length > 0) {
                 await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
@@ -316,9 +316,9 @@ const initializeDataUpdates = async () => {
         })
       );
 
-      const results = await Promise.all(updatePromises);
-      const successCount = results.filter(r => r.success).length;
-      const failureCount = results.filter(r => !r.success).length;
+      const results = await Promise.allSettled(updatePromises);
+      const successCount = results.filter(r => r.status === 'fulfilled' && r.value && r.value.success).length;
+      const failureCount = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && (!r.value || !r.value.success))).length;
 
       const cronDuration = ((Date.now() - cronStartTime) / 1000 / 60).toFixed(2);
       logger.info(`[CRON] Completed update cycle in ${cronDuration} minutes (${successCount} succeeded, ${failureCount} failed)`);
@@ -395,6 +395,9 @@ const initializeDataUpdates = async () => {
 const isTestMode = process.env.NODE_ENV === 'test';
 connectDB().then(async () => {
   if (!isTestMode) {
+    // Remove legacy chains that shouldn't be in the API
+    await removeLegacyChains();
+
     // Ensure unique indexes exist (migrates old non-unique collections)
     await ensureTeleporterUniqueIndex();
 
@@ -407,6 +410,24 @@ connectDB().then(async () => {
     logger.info('Skipping background data updates in test mode');
   }
 });
+
+/**
+ * Remove legacy chains (X-Chain, P-Chain) that should not be in the L1 API
+ */
+async function removeLegacyChains() {
+  try {
+    const Chain = require('./models/chain');
+    const result = await Chain.deleteMany({
+      chainName: { $in: ['X-Chain', 'P-Chain'] }
+    });
+    
+    if (result.deletedCount > 0) {
+      logger.info(`Removed ${result.deletedCount} legacy chains (X-Chain/P-Chain) from database`);
+    }
+  } catch (error) {
+    logger.error('Error removing legacy chains:', error);
+  }
+}
 
 /**
  * Helper function to ensure unique index on updateType exists
