@@ -202,6 +202,20 @@ class TeleporterService {
                     } : {})
                 });
 
+                // Update heartbeat every 10 pages to signal the update is still alive
+                // This prevents the controller from marking the update as stale
+                if (ownershipCheck && pageCount % 10 === 0) {
+                    try {
+                        await TeleporterUpdateState.updateOne(
+                            { updateType, state: 'in_progress' },
+                            { $set: { lastUpdatedAt: new Date() } }
+                        );
+                        logger.debug(`[TELEPORTER ${updateLabel}] Heartbeat updated at page ${pageCount}`);
+                    } catch (heartbeatError) {
+                        logger.warn(`[TELEPORTER ${updateLabel}] Failed to update heartbeat:`, heartbeatError.message);
+                    }
+                }
+
                 // If we reached the time limit, stop pagination
                 if (reachedTimeLimit) {
                     logger.info(`[TELEPORTER ${updateLabel}] Reached time limit (${hoursAgo} hours), stopping pagination`);
@@ -737,15 +751,21 @@ class TeleporterService {
             const data = await TeleporterMessage.findOne({ dataType: 'weekly' })
                 .sort({ updatedAt: -1 });
 
+            // Check if an update is already in progress before triggering a new one
+            const updateState = await TeleporterUpdateState.findOne({ updateType: 'weekly' });
+            const updateInProgress = updateState && updateState.state === 'in_progress';
+
             if (data) {
                 const age = Date.now() - new Date(data.updatedAt).getTime();
                 
-                // If data is older than 6 hours, trigger background update (weekly data doesn't need to be as fresh)
-                if (age > 6 * 60 * 60 * 1000) {
+                // If data is older than 6 hours AND no update is in progress, trigger background update
+                if (age > 6 * 60 * 60 * 1000 && !updateInProgress) {
                     logger.info('[TELEPORTER WEEKLY] Weekly data is older than 6 hours, triggering background update');
                     this.updateWeeklyData().catch(err => {
                         logger.error('[TELEPORTER WEEKLY] Background weekly update failed:', err);
                     });
+                } else if (age > 6 * 60 * 60 * 1000 && updateInProgress) {
+                    logger.debug('[TELEPORTER WEEKLY] Weekly data is older than 6 hours, but update already in progress');
                 }
 
                 return {
@@ -763,11 +783,15 @@ class TeleporterService {
                 };
             }
 
-            // If no data exists, trigger update and return empty result
-            logger.info('[TELEPORTER WEEKLY] No weekly data found, triggering initial update');
-            this.updateWeeklyData().catch(err => {
-                logger.error('[TELEPORTER WEEKLY] Initial weekly update failed:', err);
-            });
+            // If no data exists and no update is in progress, trigger update and return empty result
+            if (!updateInProgress) {
+                logger.info('[TELEPORTER WEEKLY] No weekly data found, triggering initial update');
+                this.updateWeeklyData().catch(err => {
+                    logger.error('[TELEPORTER WEEKLY] Initial weekly update failed:', err);
+                });
+            } else {
+                logger.debug('[TELEPORTER WEEKLY] No weekly data found, but update already in progress');
+            }
 
             return {
                 data: [],
