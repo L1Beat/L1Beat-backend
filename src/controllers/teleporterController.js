@@ -97,17 +97,21 @@ exports.getWeeklyCrossChainMessageCount = async (req, res) => {
         }
         // If we have stale update state, fix it
         else if (updateState && updateState.state === 'in_progress') {
-            // Check if the update state is stale (hasn't been updated in 5 minutes)
+            // Check if the update state is stale
+            // Weekly updates can take 2-4+ hours, so use a generous 4-hour timeout
+            // With heartbeat updates every ~10 pages (~2-3 min), this is a safety net for truly dead updates
+            const STALE_TIMEOUT_WEEKLY_MS = 4 * 60 * 60 * 1000; // 4 hours
             const lastUpdated = new Date(updateState.lastUpdatedAt);
             const timeSinceUpdate = new Date().getTime() - lastUpdated.getTime();
             
             // If the update is stale or if the data is newer than the update state, mark it as failed
-            if (timeSinceUpdate > 5 * 60 * 1000 || 
+            if (timeSinceUpdate > STALE_TIMEOUT_WEEKLY_MS || 
                 (recentData && recentData.updatedAt && new Date(recentData.updatedAt) > new Date(updateState.startedAt))) {
                 logger.info('Found stale or inconsistent update state, marking as failed', {
                     updateStateLastUpdated: lastUpdated.toISOString(),
                     dataUpdatedAt: recentData ? recentData.updatedAt.toISOString() : 'No data',
                     timeSinceUpdateMs: timeSinceUpdate,
+                    staleThresholdMs: STALE_TIMEOUT_WEEKLY_MS,
                     requestId
                 });
                 
@@ -175,8 +179,9 @@ exports.getWeeklyCrossChainMessageCount = async (req, res) => {
             const lastUpdated = new Date(updateState.lastUpdatedAt);
             const timeSinceUpdate = new Date().getTime() - lastUpdated.getTime();
             
-            // Only include update status if it's been updated in the last 5 minutes
-            if (timeSinceUpdate < 5 * 60 * 1000) {
+            // Only include update status if it's been updated in the last 15 minutes
+            // (heartbeat updates every ~10 pages / ~2-3 minutes, so 15 min gives good buffer)
+            if (timeSinceUpdate < 15 * 60 * 1000) {
                 // Ensure progress object has all required fields
                 const progress = updateState.progress || {};
                 
