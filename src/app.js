@@ -395,17 +395,23 @@ const initializeDataUpdates = async () => {
 const isTestMode = process.env.NODE_ENV === 'test';
 connectDB().then(async () => {
   if (!isTestMode) {
-    // Remove legacy chains that shouldn't be in the API
-    await removeLegacyChains();
+    try {
+      // Remove legacy chains that shouldn't be in the API
+      await removeLegacyChains();
 
-    // Ensure unique indexes exist (migrates old non-unique collections)
-    await ensureTeleporterUniqueIndex();
+      // Ensure unique indexes exist (migrates old non-unique collections)
+      // This is critical - without unique index, concurrent updates can corrupt data
+      await ensureTeleporterUniqueIndex();
 
-    // First, check for and fix any stale teleporter updates
-    await fixStaleUpdates();
+      // First, check for and fix any stale teleporter updates
+      await fixStaleUpdates();
 
-    // Then continue with normal initialization
-    initializeDataUpdates();
+      // Then continue with normal initialization
+      initializeDataUpdates();
+    } catch (error) {
+      logger.error('Critical startup error:', error.message);
+      process.exit(1);
+    }
   } else {
     logger.info('Skipping background data updates in test mode');
   }
@@ -479,9 +485,11 @@ async function ensureTeleporterUniqueIndex() {
     } catch (error) {
       logger.warn(`Error ensuring teleporter unique index (attempt ${attempt}): ${error.message}`);
       
-      // If we've exhausted retries, log error and stop
+      // If we've exhausted retries, throw to prevent server from running with corrupted state
       if (attempt === maxRetries) {
         logger.error('Failed to ensure unique index after multiple attempts:', error);
+        throw new Error(`Critical: Failed to ensure TeleporterUpdateState unique index after ${maxRetries} attempts. ` +
+          'Server cannot safely start without this constraint. Manual intervention required.');
       } else {
         // Wait a bit before retrying to let any race conditions settle
         await new Promise(resolve => setTimeout(resolve, 1000));
