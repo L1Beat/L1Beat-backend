@@ -179,18 +179,24 @@ const initializeDataUpdates = async () => {
           } else {
             logger.debug(`Skipping TPS/TxCount fetch for chain ${dbChain.chainName} - no valid numeric evmChainId`);
           }
+          
+          return { success: true, chain: dbChain.chainName };
         } catch (error) {
           logger.error(`[GLACIER] Error updating validators/metrics for ${dbChain.chainName}:`, {
             message: error.message,
             chainId: dbChain.chainId
           });
+          return { success: false, chain: dbChain.chainName, error: error.message };
         }
       })
     );
 
-    await Promise.allSettled(initPromises);
+    const results = await Promise.allSettled(initPromises);
+    const successes = results.filter(r => r.status === 'fulfilled' && r.value?.success).length;
+    const failures = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value?.success)).length;
+    
     const initDuration = ((Date.now() - initStartTime) / 1000).toFixed(2);
-    logger.info(`[INIT] Completed initial data load for ${dbChains.length} chains in ${initDuration}s`);
+    logger.info(`[INIT] Completed initial data load for ${dbChains.length} chains in ${initDuration}s (${successes} succeeded, ${failures} failed)`);
 
     // Verify chains were saved
     const savedChains = await Chain.find();
@@ -405,47 +411,61 @@ connectDB().then(async () => {
 /**
  * Helper function to ensure unique index on updateType exists
  * This handles migration for existing collections that might have duplicates
+ * Uses a retry loop to handle potential race conditions during cleanup
  */
 async function ensureTeleporterUniqueIndex() {
-  try {
-    const { TeleporterUpdateState } = require('./models/teleporterMessage');
-    logger.info('Verifying TeleporterUpdateState unique index...');
+  const { TeleporterUpdateState } = require('./models/teleporterMessage');
+  const maxRetries = 3;
 
-    // 1. Find and remove duplicates
-    const duplicates = await TeleporterUpdateState.aggregate([
-      {
-        $group: {
-          _id: "$updateType",
-          count: { $sum: 1 },
-          ids: { $push: "$_id" }
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      logger.info(`Verifying TeleporterUpdateState unique index (attempt ${attempt}/${maxRetries})...`);
+
+      // 1. Find and remove duplicates
+      const duplicates = await TeleporterUpdateState.aggregate([
+        {
+          $group: {
+            _id: "$updateType",
+            count: { $sum: 1 },
+            ids: { $push: "$_id" }
+          }
+        },
+        {
+          $match: {
+            count: { $gt: 1 }
+          }
         }
-      },
-      {
-        $match: {
-          count: { $gt: 1 }
+      ]);
+
+      for (const dup of duplicates) {
+        logger.warn(`Found duplicates for updateType ${dup._id}, cleaning up...`);
+        // Keep the most recently updated one
+        const docs = await TeleporterUpdateState.find({ _id: { $in: dup.ids } })
+          .sort({ lastUpdatedAt: -1 });
+        
+        const [keep, ...remove] = docs;
+        if (remove.length > 0) {
+          await TeleporterUpdateState.deleteMany({ _id: { $in: remove.map(d => d._id) } });
+          logger.info(`Removed ${remove.length} duplicate documents for ${dup._id}`);
         }
       }
-    ]);
 
-    for (const dup of duplicates) {
-      logger.warn(`Found duplicates for updateType ${dup._id}, cleaning up...`);
-      // Keep the most recently updated one
-      const docs = await TeleporterUpdateState.find({ _id: { $in: dup.ids } })
-        .sort({ lastUpdatedAt: -1 });
+      // 2. Explicitly sync indexes to ensure unique constraint is applied
+      await TeleporterUpdateState.syncIndexes();
+      logger.info('TeleporterUpdateState indexes synced successfully');
+      return;
+
+    } catch (error) {
+      logger.warn(`Error ensuring teleporter unique index (attempt ${attempt}): ${error.message}`);
       
-      const [keep, ...remove] = docs;
-      if (remove.length > 0) {
-        await TeleporterUpdateState.deleteMany({ _id: { $in: remove.map(d => d._id) } });
-        logger.info(`Removed ${remove.length} duplicate documents for ${dup._id}`);
+      // If we've exhausted retries, log error and stop
+      if (attempt === maxRetries) {
+        logger.error('Failed to ensure unique index after multiple attempts:', error);
+      } else {
+        // Wait a bit before retrying to let any race conditions settle
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
-
-    // 2. Explicitly sync indexes to ensure unique constraint is applied
-    await TeleporterUpdateState.syncIndexes();
-    logger.info('TeleporterUpdateState indexes synced successfully');
-
-  } catch (error) {
-    logger.error('Error ensuring teleporter unique index:', error);
   }
 }
 
