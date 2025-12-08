@@ -98,10 +98,11 @@ class TeleporterService {
                         break; // Success, exit retry loop
                     } catch (error) {
                         // Retry on timeout, network errors, or temporary server errors
-                        const isNetworkError = error.code === 'ECONNABORTED' ||
-                                              error.code === 'ECONNRESET' ||
-                                              error.code === 'ETIMEDOUT' ||
-                                              error.code === 'ENOTFOUND' ||
+                        const errorCode = error.code || error.cause?.code;
+                        const isNetworkError = errorCode === 'ECONNABORTED' ||
+                                              errorCode === 'ECONNRESET' ||
+                                              errorCode === 'ETIMEDOUT' ||
+                                              errorCode === 'ENOTFOUND' ||
                                               error.message?.includes('socket hang up');
 
                         const isServerError = error.response?.status === 502 || // Bad Gateway
@@ -113,9 +114,10 @@ class TeleporterService {
                         if (isRetryableError && retryCount < maxRetries) {
                             retryCount++;
                             const waitTime = Math.min(1000 * Math.pow(2, retryCount), 10000); // Exponential backoff, max 10s
-                            const errorType = error.response?.status ? `HTTP ${error.response.status}` : error.code || 'network error';
+                            const errorType = error.response?.status ? `HTTP ${error.response.status}` : errorCode || 'network error';
                             logger.warn(`[TELEPORTER ${updateLabel}] Page ${pageCount} ${errorType} (attempt ${retryCount}/${maxRetries + 1}), retrying in ${waitTime / 1000}s...`, {
                                 error: error.message,
+                                errorCode: errorCode,
                                 status: error.response?.status,
                                 timeout: `${timeout / 1000}s`,
                                 pageToken: nextPageToken ? 'present' : 'none'
