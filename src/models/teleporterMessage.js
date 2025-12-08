@@ -57,6 +57,7 @@ const teleporterUpdateStateSchema = new mongoose.Schema({
         type: String,
         enum: ['daily', 'weekly'],
         required: true,
+        unique: true,
         index: true
     },
     // Current state of the update
