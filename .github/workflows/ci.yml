@@ -12,11 +12,11 @@ jobs:
 
     services:
       mongodb:
-        image: mongo:latest
+        image: mongo:7.0
         options: >-
-          --health-cmd mongosh
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
           --health-interval 10s
-          --health-timeout 5s
+          --health-timeout 10s
           --health-retries 5
         ports:
           - 27017:27017
@@ -29,6 +29,19 @@ jobs:
         with:
           node-version: '18'
           cache: 'npm'
+
+      - name: Wait for MongoDB to be ready
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 27017; then
+              echo "MongoDB is ready"
+              exit 0
+            fi
+            echo "Waiting for MongoDB... attempt $i/30"
+            sleep 2
+          done
+          echo "MongoDB failed to start"
+          exit 1
 
       - name: Configure npm for GitHub Packages
         run: |
@@ -46,6 +59,12 @@ jobs:
         env:
           NODE_ENV: test
           DEV_MONGODB_URI: mongodb://localhost:27017/l1beat-test
+          GLACIER_API_BASE: https://glacier-api.avax.network/v1
+          GLACIER_API_KEY: ${{ secrets.GLACIER_API_KEY }}
+          METRICS_API_BASE: https://metrics.avax.network/v2
+          DEFILLAMA_API_BASE: https://api.llama.fi/v2
+          SUBSTACK_RSS_URL: https://l1beat.substack.com/feed
+          FRONTEND_URL: http://localhost:5173
 
       - name: Upload coverage
         if: always()
