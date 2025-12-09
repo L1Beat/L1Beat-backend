@@ -4,6 +4,7 @@ const cors = require('cors');
 const cron = require('node-cron');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const pLimit = require('p-limit');
 const config = require('./config/config');
 const connectDB = require('./config/db');
 const chainRoutes = require('./routes/chainRoutes');
@@ -140,44 +141,62 @@ const initializeDataUpdates = async () => {
     const dbChains = await Chain.find({ 'registryMetadata.source': 'l1-registry' });
     logger.info(`[GLACIER] Found ${dbChains.length} registry chains to update validators for`);
 
-    for (const dbChain of dbChains) {
-      try {
-        // Only fetch validators, don't update chain metadata
-        if (dbChain.subnetId) {
-          logger.debug(`[GLACIER] Fetching validators for ${dbChain.chainName} (${dbChain.subnetId})`);
-          const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
+    // Process chains in parallel with concurrency limit
+    const initLimit = pLimit(15); // Process 15 chains concurrently
+    const initStartTime = Date.now();
 
-          if (validators && validators.length > 0) {
-            await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
-            logger.info(`[GLACIER] Updated ${validators.length} validators for ${dbChain.chainName}`);
+    const initPromises = dbChains.map(dbChain =>
+      initLimit(async () => {
+        try {
+          // Only fetch validators, don't update chain metadata
+          if (dbChain.subnetId) {
+            logger.debug(`[GLACIER] Fetching validators for ${dbChain.chainName} (${dbChain.subnetId})`);
+            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.evmChainId);
+
+            if (validators && validators.length > 0) {
+              await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
+              logger.info(`[GLACIER] Updated ${validators.length} validators for ${dbChain.chainName}`);
+            }
           }
-        }
 
-        // Fetch TPS and metrics if evmChainId is available
-        const chainIdForTps = dbChain.evmChainId;
-        if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-          logger.debug(`[METRICS] Fetching metrics for ${dbChain.chainName} (evmChainId: ${chainIdForTps})`);
+          // Fetch TPS and metrics if evmChainId is available
+          const chainIdForTps = dbChain.evmChainId;
+          if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+            logger.debug(`[METRICS] Fetching metrics for ${dbChain.chainName} (evmChainId: ${chainIdForTps})`);
 
-          // Add initial TPS update
-          await tpsService.updateTpsData(String(chainIdForTps));
-          // Add initial Transaction Count update
-          await tpsService.updateCumulativeTxCount(String(chainIdForTps));
-          // Add initial Gas Used update
-          await gasUsedService.updateGasUsedData(String(chainIdForTps));
-          // Add initial Average Gas Price update
-          await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
-          // Add initial Fees Paid update
-          await feesPaidService.updateFeesPaidData(String(chainIdForTps));
-        } else {
-          logger.debug(`Skipping TPS/TxCount fetch for chain ${dbChain.chainName} - no valid numeric evmChainId`);
+            // Add initial TPS update
+            await tpsService.updateTpsData(String(chainIdForTps));
+            // Add initial Transaction Count update
+            await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+            // Add initial Gas Used update
+            await gasUsedService.updateGasUsedData(String(chainIdForTps));
+            // Add initial Average Gas Price update
+            await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
+            // Add initial Fees Paid update
+            await feesPaidService.updateFeesPaidData(String(chainIdForTps));
+
+            logger.info(`[INIT] Completed all metrics for ${dbChain.chainName}`);
+          } else {
+            logger.debug(`Skipping TPS/TxCount fetch for chain ${dbChain.chainName} - no valid numeric evmChainId`);
+          }
+          
+          return { success: true, chain: dbChain.chainName };
+        } catch (error) {
+          logger.error(`[GLACIER] Error updating validators/metrics for ${dbChain.chainName}:`, {
+            message: error.message,
+            chainId: dbChain.chainId
+          });
+          return { success: false, chain: dbChain.chainName, error: error.message };
         }
-      } catch (error) {
-        logger.error(`[GLACIER] Error updating validators/metrics for ${dbChain.chainName}:`, {
-          message: error.message,
-          chainId: dbChain.chainId
-        });
-      }
-    }
+      })
+    );
+
+    const results = await Promise.allSettled(initPromises);
+    const successes = results.filter(r => r.status === 'fulfilled' && r.value?.success).length;
+    const failures = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value?.success)).length;
+    
+    const initDuration = ((Date.now() - initStartTime) / 1000).toFixed(2);
+    logger.info(`[INIT] Completed initial data load for ${dbChains.length} chains in ${initDuration}s (${successes} succeeded, ${failures} failed)`);
 
     // Verify chains were saved
     const savedChains = await Chain.find();
@@ -241,6 +260,7 @@ const initializeDataUpdates = async () => {
 
   // Chain and TPS updates every hour
   cron.schedule(config.cron.chainUpdate, async () => {
+    const cronStartTime = Date.now();
     try {
       logger.info(`[CRON] Starting scheduled validator and metrics update at ${new Date().toISOString()}`);
 
@@ -248,48 +268,64 @@ const initializeDataUpdates = async () => {
       const dbChains = await Chain.find({ 'registryMetadata.source': 'l1-registry' });
       logger.info(`[CRON] Found ${dbChains.length} registry chains to update`);
 
-      for (const dbChain of dbChains) {
-        try {
-          // Only fetch validators from Glacier, don't update chain metadata
-          if (dbChain.subnetId) {
-            const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.subnetId);
+      // Process chains in parallel with concurrency limit
+      const limit = pLimit(15); // Process 15 chains concurrently
 
-            if (validators && validators.length > 0) {
-              await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
+      const updatePromises = dbChains.map(dbChain =>
+        limit(async () => {
+          try {
+            // Only fetch validators from Glacier, don't update chain metadata
+            if (dbChain.subnetId) {
+              const validators = await chainService.fetchValidators(dbChain.subnetId, dbChain.evmChainId);
+
+              if (validators && validators.length > 0) {
+                await chainService.updateValidatorsOnly(dbChain.subnetId, validators);
+              }
             }
-          }
 
-          // Fetch TPS and metrics if evmChainId is available
-          const chainIdForTps = dbChain.evmChainId;
-          if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-            // Add TPS update for each chain
-            await tpsService.updateTpsData(String(chainIdForTps));
-            // Add Max TPS update for each chain
-            await maxTpsService.updateMaxTpsData(String(chainIdForTps));
-            // Add Cumulative Transaction Count update for each chain
-            await tpsService.updateCumulativeTxCount(String(chainIdForTps));
-            // Add Daily Transaction Count update for each chain
-            await txCountService.updateTxCountData(String(chainIdForTps));
-            // Add Active Addresses update for each chain
-            await activeAddressesService.updateActiveAddressesData(String(chainIdForTps));
-            // Add Gas Used update for each chain
-            await gasUsedService.updateGasUsedData(String(chainIdForTps));
-            // Add Average Gas Price update for each chain
-            await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
-            // Add Fees Paid update for each chain
-            await feesPaidService.updateFeesPaidData(String(chainIdForTps));
-          }
-        } catch (error) {
-          logger.error(`[CRON] Error updating ${dbChain.chainName}:`, {
-            message: error.message,
-            subnetId: dbChain.subnetId
-          });
-        }
-      }
+            // Fetch TPS and metrics if evmChainId is available
+            const chainIdForTps = dbChain.evmChainId;
+            if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
+              // Add TPS update for each chain
+              await tpsService.updateTpsData(String(chainIdForTps));
+              // Add Max TPS update for each chain
+              await maxTpsService.updateMaxTpsData(String(chainIdForTps));
+              // Add Cumulative Transaction Count update for each chain
+              await tpsService.updateCumulativeTxCount(String(chainIdForTps));
+              // Add Daily Transaction Count update for each chain
+              await txCountService.updateTxCountData(String(chainIdForTps));
+              // Add Active Addresses update for each chain
+              await activeAddressesService.updateActiveAddressesData(String(chainIdForTps));
+              // Add Gas Used update for each chain
+              await gasUsedService.updateGasUsedData(String(chainIdForTps));
+              // Add Average Gas Price update for each chain
+              await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
+              // Add Fees Paid update for each chain
+              await feesPaidService.updateFeesPaidData(String(chainIdForTps));
+            }
 
-      logger.info(`[CRON] Updated ${dbChains.length} chains with validators, TPS, Max TPS, TxCount, Active Addresses, Gas Used, Avg Gas Price, and Fees Paid data`);
+            logger.info(`[CRON] Successfully updated ${dbChain.chainName}`);
+            return { success: true };
+          } catch (error) {
+            logger.error(`[CRON] Error updating ${dbChain.chainName}:`, {
+              message: error.message,
+              subnetId: dbChain.subnetId
+            });
+            return { success: false };
+          }
+        })
+      );
+
+      const results = await Promise.allSettled(updatePromises);
+      const successCount = results.filter(r => r.status === 'fulfilled' && r.value && r.value.success).length;
+      const failureCount = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && (!r.value || !r.value.success))).length;
+
+      const cronDuration = ((Date.now() - cronStartTime) / 1000 / 60).toFixed(2);
+      logger.info(`[CRON] Completed update cycle in ${cronDuration} minutes (${successCount} succeeded, ${failureCount} failed)`);
+      logger.info(`[CRON] Updated ${successCount} chains with validators, TPS, Max TPS, TxCount, Active Addresses, Gas Used, Avg Gas Price, and Fees Paid data`);
     } catch (error) {
-      logger.error('[CRON] Validator/Metrics update failed:', error);
+      const cronDuration = ((Date.now() - cronStartTime) / 1000 / 60).toFixed(2);
+      logger.error(`[CRON] Validator/Metrics update failed after ${cronDuration} minutes:`, error);
     }
   });
 
@@ -359,15 +395,108 @@ const initializeDataUpdates = async () => {
 const isTestMode = process.env.NODE_ENV === 'test';
 connectDB().then(async () => {
   if (!isTestMode) {
-    // First, check for and fix any stale teleporter updates
-    await fixStaleUpdates();
+    try {
+      // Remove legacy chains that shouldn't be in the API
+      await removeLegacyChains();
 
-    // Then continue with normal initialization
-    initializeDataUpdates();
+      // Ensure unique indexes exist (migrates old non-unique collections)
+      // This is critical - without unique index, concurrent updates can corrupt data
+      await ensureTeleporterUniqueIndex();
+
+      // First, check for and fix any stale teleporter updates
+      await fixStaleUpdates();
+
+      // Then continue with normal initialization
+      initializeDataUpdates();
+    } catch (error) {
+      logger.error('Critical startup error:', error.message);
+      process.exit(1);
+    }
   } else {
     logger.info('Skipping background data updates in test mode');
   }
 });
+
+/**
+ * Remove legacy chains (X-Chain, P-Chain) that should not be in the L1 API
+ */
+async function removeLegacyChains() {
+  try {
+    const Chain = require('./models/chain');
+    const result = await Chain.deleteMany({
+      chainName: { $in: ['X-Chain', 'P-Chain'] }
+    });
+    
+    if (result.deletedCount > 0) {
+      logger.info(`Removed ${result.deletedCount} legacy chains (X-Chain/P-Chain) from database`);
+    }
+  } catch (error) {
+    logger.error('Error removing legacy chains:', error);
+  }
+}
+
+/**
+ * Helper function to ensure unique index on updateType exists
+ * This handles migration for existing collections that might have duplicates
+ * Uses a retry loop to handle potential race conditions during cleanup
+ */
+async function ensureTeleporterUniqueIndex() {
+  const { TeleporterUpdateState } = require('./models/teleporterMessage');
+  const maxRetries = 3;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      logger.info(`Verifying TeleporterUpdateState unique index (attempt ${attempt}/${maxRetries})...`);
+
+      // 1. Find and remove duplicates
+      const duplicates = await TeleporterUpdateState.aggregate([
+        {
+          $group: {
+            _id: "$updateType",
+            count: { $sum: 1 },
+            ids: { $push: "$_id" }
+          }
+        },
+        {
+          $match: {
+            count: { $gt: 1 }
+          }
+        }
+      ]);
+
+      for (const dup of duplicates) {
+        logger.warn(`Found duplicates for updateType ${dup._id}, cleaning up...`);
+        // Keep the most recently updated one
+        const docs = await TeleporterUpdateState.find({ _id: { $in: dup.ids } })
+          .sort({ lastUpdatedAt: -1 });
+        
+        const [keep, ...remove] = docs;
+        if (remove.length > 0) {
+          await TeleporterUpdateState.deleteMany({ _id: { $in: remove.map(d => d._id) } });
+          logger.info(`Removed ${remove.length} duplicate documents for ${dup._id}`);
+        }
+      }
+
+      // 2. Explicitly sync indexes to ensure unique constraint is applied
+      await TeleporterUpdateState.syncIndexes();
+      logger.info('TeleporterUpdateState indexes synced successfully');
+      return;
+
+    } catch (error) {
+      logger.warn(`Error ensuring teleporter unique index (attempt ${attempt}): ${error.message}`);
+      
+      // If we've exhausted retries, throw to prevent server from running with corrupted state
+      if (attempt === maxRetries) {
+        logger.error('Failed to ensure unique index after multiple attempts:', error);
+        throw new Error(`Critical: Failed to ensure TeleporterUpdateState unique index after ${maxRetries} attempts. ` +
+          'Server cannot safely start without this constraint. Manual intervention required.');
+      } else {
+        // Wait a bit before retrying to let any race conditions settle
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+  }
+}
 
 /**
  * Helper function to check for and fix any stale teleporter updates
@@ -381,13 +510,15 @@ async function fixStaleUpdates() {
     const { TeleporterUpdateState } = require('./models/teleporterMessage');
 
     // Find any in_progress updates
-    const staleUpdates = await TeleporterUpdateState.find({
+    const inProgressUpdates = await TeleporterUpdateState.find({
       state: 'in_progress'
     });
 
-    if (staleUpdates.length > 0) {
-      logger.warn(`Found ${staleUpdates.length} stale teleporter updates on startup, marking as failed`, {
-        updates: staleUpdates.map(u => ({
+    // After server restart, ALL in_progress states are stale
+    // The processes that owned them are gone - no time-based check needed
+    if (inProgressUpdates.length > 0) {
+      logger.warn(`Found ${inProgressUpdates.length} in_progress teleporter updates on startup, marking as failed`, {
+        updates: inProgressUpdates.map(u => ({
           type: u.updateType,
           startedAt: u.startedAt,
           lastUpdatedAt: u.lastUpdatedAt,
@@ -395,22 +526,22 @@ async function fixStaleUpdates() {
         }))
       });
 
-      // Mark all stale updates as failed
-      for (const update of staleUpdates) {
+      // Mark all in_progress updates as failed (their processes are gone after restart)
+      for (const update of inProgressUpdates) {
         update.state = 'failed';
         update.lastUpdatedAt = new Date();
         update.error = {
-          message: 'Update timed out (found on server startup)',
-          details: `Update was still in_progress state when server restarted`
+          message: 'Server restarted while update was in progress',
+          details: `Update process was terminated by server restart`
         };
         await update.save();
-        logger.info(`Marked stale ${update.updateType} update as failed`, {
+        logger.info(`Marked ${update.updateType} update as failed (server restart)`, {
           startedAt: update.startedAt,
           lastUpdatedAt: update.lastUpdatedAt
         });
       }
     } else {
-      logger.info('No stale teleporter updates found on startup');
+      logger.info('No in_progress teleporter updates found on startup');
     }
   } catch (error) {
     logger.error('Error checking for stale updates:', error);
