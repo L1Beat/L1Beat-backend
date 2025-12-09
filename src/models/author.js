@@ -81,7 +81,7 @@ const authorSchema = new mongoose.Schema(
 );
 
 // Indexes for better query performance
-authorSchema.index({ slug: 1 });
+// Note: slug index is already created by unique: true in schema
 authorSchema.index({ name: 1 });
 authorSchema.index({ isActive: 1 });
 authorSchema.index({ substackNames: 1 });

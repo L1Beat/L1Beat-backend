@@ -21,8 +21,7 @@ const config = {
         ? process.env.PROD_MONGODB_URI
         : process.env.LOCAL_MONGODB_URI || process.env.DEV_MONGODB_URI,
     options: {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
+      // useNewUrlParser and useUnifiedTopology are deprecated since MongoDB Driver 4.0
     },
   },
 
@@ -89,8 +88,6 @@ const config = {
         : [
             "https://l1beat.io",
             "https://www.l1beat.io",
-            "http://localhost:4173",
-            "http://localhost:5173",
             process.env.FRONTEND_URL,
           ].filter(Boolean),
     credentials: true,
