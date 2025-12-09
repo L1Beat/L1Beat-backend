@@ -514,34 +514,11 @@ async function fixStaleUpdates() {
       state: 'in_progress'
     });
 
-    const staleUpdates = [];
-
-    for (const update of inProgressUpdates) {
-      const lastUpdated = new Date(update.lastUpdatedAt).getTime();
-      const now = Date.now();
-      const elapsedMinutes = (now - lastUpdated) / (60 * 1000);
-      
-      let isStale = false;
-      
-      // Daily updates shouldn't take more than 60 minutes
-      if (update.updateType === 'daily' && elapsedMinutes > 60) {
-        isStale = true;
-      }
-      // Weekly updates can take up to 8 hours (480 minutes)
-      else if (update.updateType === 'weekly' && elapsedMinutes > 480) {
-        isStale = true;
-      }
-
-      if (isStale) {
-        staleUpdates.push(update);
-      } else {
-        logger.info(`Found active ${update.updateType} update started at ${update.startedAt} (last updated ${Math.round(elapsedMinutes)} mins ago), leaving it running`);
-      }
-    }
-
-    if (staleUpdates.length > 0) {
-      logger.warn(`Found ${staleUpdates.length} stale teleporter updates on startup, marking as failed`, {
-        updates: staleUpdates.map(u => ({
+    // After server restart, ALL in_progress states are stale
+    // The processes that owned them are gone - no time-based check needed
+    if (inProgressUpdates.length > 0) {
+      logger.warn(`Found ${inProgressUpdates.length} in_progress teleporter updates on startup, marking as failed`, {
+        updates: inProgressUpdates.map(u => ({
           type: u.updateType,
           startedAt: u.startedAt,
           lastUpdatedAt: u.lastUpdatedAt,
@@ -549,22 +526,22 @@ async function fixStaleUpdates() {
         }))
       });
 
-      // Mark all stale updates as failed
-      for (const update of staleUpdates) {
+      // Mark all in_progress updates as failed (their processes are gone after restart)
+      for (const update of inProgressUpdates) {
         update.state = 'failed';
         update.lastUpdatedAt = new Date();
         update.error = {
-          message: 'Update timed out (found on server startup)',
-          details: `Update was still in_progress state when server restarted`
+          message: 'Server restarted while update was in progress',
+          details: `Update process was terminated by server restart`
         };
         await update.save();
-        logger.info(`Marked stale ${update.updateType} update as failed`, {
+        logger.info(`Marked ${update.updateType} update as failed (server restart)`, {
           startedAt: update.startedAt,
           lastUpdatedAt: update.lastUpdatedAt
         });
       }
     } else {
-      logger.info('No stale teleporter updates found on startup');
+      logger.info('No in_progress teleporter updates found on startup');
     }
   } catch (error) {
     logger.error('Error checking for stale updates:', error);
