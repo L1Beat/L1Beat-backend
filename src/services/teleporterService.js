@@ -119,18 +119,27 @@ class TeleporterService {
                                             error.response?.status === 503 || // Service Unavailable
                                             error.response?.status === 504;   // Gateway Timeout
 
-                        const isRetryableError = isNetworkError || isServerError;
+                        const isRateLimitError = error.response?.status === 429; // Too Many Requests
+
+                        const isRetryableError = isNetworkError || isServerError || isRateLimitError;
 
                         if (isRetryableError && retryCount < maxRetries) {
                             retryCount++;
-                            const waitTime = Math.min(1000 * Math.pow(2, retryCount), 10000); // Exponential backoff, max 10s
+                            // Use longer backoff for rate limit errors (30-60s), shorter for others (2-10s)
+                            let waitTime;
+                            if (isRateLimitError) {
+                                waitTime = 30000 + (retryCount * 15000); // 30s, 45s, 60s for rate limits
+                            } else {
+                                waitTime = Math.min(1000 * Math.pow(2, retryCount), 10000); // Exponential backoff, max 10s
+                            }
                             const errorType = error.response?.status ? `HTTP ${error.response.status}` : errorCode || 'network error';
                             logger.warn(`[TELEPORTER ${updateLabel}] Page ${pageCount} ${errorType} (attempt ${retryCount}/${maxRetries + 1}), retrying in ${waitTime / 1000}s...`, {
                                 error: error.message,
                                 errorCode: errorCode,
                                 status: error.response?.status,
                                 timeout: `${timeout / 1000}s`,
-                                pageToken: nextPageToken ? 'present' : 'none'
+                                pageToken: nextPageToken ? 'present' : 'none',
+                                isRateLimitError
                             });
                             await new Promise(resolve => setTimeout(resolve, waitTime));
                         } else {
