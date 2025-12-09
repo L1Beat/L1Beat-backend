@@ -108,8 +108,8 @@ const blogPostSchema = new mongoose.Schema(
 );
 
 // Indexes for better query performance
+// Note: slug index is already created by unique: true in schema
 blogPostSchema.index({ publishedAt: -1 });
-blogPostSchema.index({ slug: 1 });
 blogPostSchema.index({ tags: 1 });
 blogPostSchema.index({ syncStatus: 1 });
 
