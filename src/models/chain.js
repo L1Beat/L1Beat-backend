@@ -61,11 +61,11 @@ const chainSchema = new mongoose.Schema({
     },
     evmChainId: Number,
     rpcUrls: [String],
-    assets: [{
+    nativeToken: {
         symbol: String,
         name: String,
         decimals: Number
-    }],
+    },
     registryMetadata: {
         folderName: String,
         lastUpdated: Date,

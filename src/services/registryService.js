@@ -95,7 +95,7 @@ class RegistryService {
           ? chainData.rpcUrls[0]
           : undefined,
 
-        assets: chainData.assets || [],
+        nativeToken: chainData.nativeToken || {},
 
         registryMetadata: {
           folderName: folderName,
@@ -176,7 +176,7 @@ class RegistryService {
                 rpcUrls: chainData.rpcUrls,
                 rpcUrl: chainData.rpcUrl,
 
-                assets: chainData.assets,
+                nativeToken: chainData.nativeToken,
                 registryMetadata: chainData.registryMetadata,
               }
             },
