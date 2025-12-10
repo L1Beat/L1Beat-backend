@@ -74,6 +74,7 @@ class RegistryService {
       const parsed = {
         subnetId: registryData.subnetId,
         blockchainId: chainData.blockchainId,
+        chainId: chainData.blockchainId,
         chainName: chainData.name || registryData.name,
         chainLogoUri: registryData.logo,
         description: chainData.description || registryData.description,
@@ -157,6 +158,7 @@ class RegistryService {
               $set: {
                 subnetId: chainData.subnetId,
                 blockchainId: chainData.blockchainId,
+                chainId: chainData.chainId || chainData.blockchainId,
                 chainName: chainData.chainName,
                 chainLogoUri: chainData.chainLogoUri,
                 description: chainData.description,
