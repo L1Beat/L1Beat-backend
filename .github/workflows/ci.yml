@@ -46,10 +46,6 @@ jobs:
           echo "MongoDB failed to start"
           exit 1
 
-      - name: Configure npm for GitHub Packages
-        run: |
-          echo "@l1beat:registry=https://npm.pkg.github.com" >> ~/.npmrc
-
       - name: Install dependencies
         run: npm ci
 
@@ -92,10 +88,6 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Configure npm for GitHub Packages
-        run: |
-          echo "@l1beat:registry=https://npm.pkg.github.com" >> ~/.npmrc
-
       - name: Install dependencies
         run: npm ci
 
@@ -119,10 +111,6 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Configure npm for GitHub Packages
-        run: |
-          echo "@l1beat:registry=https://npm.pkg.github.com" >> ~/.npmrc
-
       - name: Install dependencies
         run: npm ci
 
@@ -145,10 +133,6 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-
-      - name: Configure npm for GitHub Packages
-        run: |
-          echo "@l1beat:registry=https://npm.pkg.github.com" >> ~/.npmrc
 
       - name: Install dependencies
         run: npm ci
