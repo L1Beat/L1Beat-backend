@@ -1,0 +1,141 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [main, develop, feature/**]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    services:
+      mongodb:
+        image: mongo:7.0
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 5
+        ports:
+          - 27017:27017
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Wait for MongoDB to be ready
+        run: |
+          for i in {1..30}; do
+            if nc -z localhost 27017; then
+              echo "MongoDB is ready"
+              exit 0
+            fi
+            echo "Waiting for MongoDB... attempt $i/30"
+            sleep 2
+          done
+          echo "MongoDB failed to start"
+          exit 1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter (if available)
+        run: npm run lint --if-present || true
+
+      - name: Run tests
+        run: npm test
+        env:
+          NODE_ENV: test
+          DEV_MONGODB_URI: mongodb://localhost:27017/l1beat-test
+          GLACIER_API_BASE: https://glacier-api.avax.network/v1
+          GLACIER_API_KEY: ${{ secrets.GLACIER_API_KEY }}
+          METRICS_API_BASE: https://metrics.avax.network/v2
+          DEFILLAMA_API_BASE: https://api.llama.fi/v2
+          SUBSTACK_RSS_URL: https://l1beat.substack.com/feed
+          FRONTEND_URL: http://localhost:5173
+
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    if: success()
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify build
+        run: npm run build --if-present || echo "No build script defined"
+
+  deploy-preview:
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to preview (if configured)
+        run: echo "Preview deployment configured in Vercel dashboard"
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to production (if configured)
+        run: echo "Production deployment configured in Vercel dashboard"

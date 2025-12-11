@@ -228,7 +228,7 @@ describe('Registry API Endpoints', () => {
           // Original fields should still be present
           expect(chain).toHaveProperty('chainId');
           expect(chain).toHaveProperty('chainName');
-          expect(chain).toHaveProperty('validators');
+          expect(chain).toHaveProperty('validatorCount'); // Backend returns validatorCount instead of validators array
           expect(chain).toHaveProperty('tps');
         }
       });

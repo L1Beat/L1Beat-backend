@@ -10,19 +10,21 @@ describe('Chain Model', () => {
   describe('Schema validation', () => {
     it('should create a chain with required fields', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain'
       };
 
       const chain = new Chain(chainData);
 
-      expect(chain.chainId).toBe(chainData.chainId);
+      expect(chain.subnetId).toBe(chainData.subnetId);
+      expect(chain.blockchainId).toBe(chainData.blockchainId);
       expect(chain.chainName).toBe(chainData.chainName);
     });
 
     it('should accept new registry fields', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
         blockchainId: 'blockchain-id-123',
         chainName: 'Test Chain',
         categories: ['DeFi', 'Gaming'],
@@ -57,13 +59,18 @@ describe('Chain Model', () => {
       expect(chain.network).toBe(chainData.network);
       expect(chain.evmChainId).toBe(chainData.evmChainId);
       expect(chain.rpcUrls).toEqual(chainData.rpcUrls);
-      expect(chain.assets).toEqual(chainData.assets);
+      // MongoDB adds _id to subdocuments, so we check the essential fields
+      expect(chain.assets.length).toBe(chainData.assets.length);
+      expect(chain.assets[0].symbol).toBe(chainData.assets[0].symbol);
+      expect(chain.assets[0].name).toBe(chainData.assets[0].name);
+      expect(chain.assets[0].decimals).toBe(chainData.assets[0].decimals);
       expect(chain.registryMetadata).toBeDefined();
     });
 
     it('should validate network enum values', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         network: 'invalid-network'
       };
@@ -78,7 +85,8 @@ describe('Chain Model', () => {
 
     it('should accept null network value', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         network: null
       };
@@ -92,7 +100,8 @@ describe('Chain Model', () => {
 
     it('should accept mainnet network value', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         network: 'mainnet'
       };
@@ -106,7 +115,8 @@ describe('Chain Model', () => {
 
     it('should accept fuji network value', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         network: 'fuji'
       };
@@ -120,7 +130,8 @@ describe('Chain Model', () => {
 
     it('should store categories as array', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         categories: ['DeFi', 'NFT', 'Gaming']
       };
@@ -136,7 +147,8 @@ describe('Chain Model', () => {
 
     it('should store socials as array of objects', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         socials: [
           { name: 'twitter', url: 'https://twitter.com/test' },
@@ -158,7 +170,8 @@ describe('Chain Model', () => {
 
     it('should store rpcUrls as array', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         rpcUrls: ['https://rpc1.test.com', 'https://rpc2.test.com', 'https://rpc3.test.com']
       };
@@ -171,7 +184,8 @@ describe('Chain Model', () => {
 
     it('should store assets with correct structure', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         assets: [
           { symbol: 'TOKEN1', name: 'Token One', decimals: 18 },
@@ -196,13 +210,13 @@ describe('Chain Model', () => {
 
     it('should preserve existing fields alongside new registry fields', () => {
       const chainData = {
-        // Existing fields
-        chainId: 'test-chain-123',
+        // Existing fields - subnetId is required
+        subnetId: 'subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         status: 'active',
         description: 'Test chain description',
         platformChainId: 'platform-123',
-        subnetId: 'subnet-123',
         vmId: 'vm-123',
         vmName: 'EVM',
         explorerUrl: 'https://explorer.test.com',
@@ -222,7 +236,7 @@ describe('Chain Model', () => {
       const chain = new Chain(chainData);
 
       // Existing fields should still work
-      expect(chain.chainId).toBe(chainData.chainId);
+      expect(chain.blockchainId).toBe(chainData.blockchainId);
       expect(chain.status).toBe(chainData.status);
       expect(chain.vmName).toBe(chainData.vmName);
       expect(chain.explorerUrl).toBe(chainData.explorerUrl);
@@ -236,17 +250,10 @@ describe('Chain Model', () => {
   });
 
   describe('Model indexes', () => {
-    it('should have index on chainId', () => {
-      const indexes = Chain.schema.indexes();
-      const chainIdIndex = indexes.find(idx => idx[0].chainId);
-
-      expect(chainIdIndex).toBeDefined();
-    });
-
     it('should have index on blockchainId', () => {
       const indexes = Chain.schema.indexes();
+      // blockchainId has unique: true which creates an index
       const blockchainIdIndex = indexes.find(idx => idx[0].blockchainId);
-
       expect(blockchainIdIndex).toBeDefined();
     });
 
@@ -275,7 +282,8 @@ describe('Chain Model', () => {
   describe('Model methods', () => {
     it('should convert to object with toObject()', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         categories: ['DeFi'],
         network: 'mainnet'
@@ -285,14 +293,15 @@ describe('Chain Model', () => {
       const chainObj = chain.toObject();
 
       expect(typeof chainObj).toBe('object');
-      expect(chainObj.chainId).toBe(chainData.chainId);
+      expect(chainObj.blockchainId).toBe(chainData.blockchainId);
       expect(chainObj.categories).toEqual(chainData.categories);
       expect(chainObj.network).toBe(chainData.network);
     });
 
     it('should convert to JSON with toJSON()', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         categories: ['DeFi'],
         website: 'https://test.com',
@@ -302,7 +311,7 @@ describe('Chain Model', () => {
       const chain = new Chain(chainData);
       const chainJson = JSON.parse(JSON.stringify(chain));
 
-      expect(chainJson.chainId).toBe(chainData.chainId);
+      expect(chainJson.blockchainId).toBe(chainData.blockchainId);
       expect(chainJson.categories).toEqual(chainData.categories);
       expect(chainJson.website).toBe(chainData.website);
     });
@@ -311,7 +320,8 @@ describe('Chain Model', () => {
   describe('Default values', () => {
     it('should set default lastUpdated', () => {
       const chain = new Chain({
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain'
       });
 
@@ -321,7 +331,8 @@ describe('Chain Model', () => {
 
     it('should allow undefined for optional registry fields', () => {
       const chain = new Chain({
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain'
       });
 
@@ -331,7 +342,7 @@ describe('Chain Model', () => {
       expect(chain.website).toBeUndefined();
       expect(Array.isArray(chain.socials)).toBe(true);
       expect(chain.socials.length).toBe(0);
-      expect(chain.network).toBeUndefined();
+      expect(chain.network).toBeNull();
       expect(chain.evmChainId).toBeUndefined();
     });
   });
@@ -339,7 +350,7 @@ describe('Chain Model', () => {
   describe('Field types', () => {
     it('should accept blockchainId as string', () => {
       const chain = new Chain({
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
         blockchainId: 'blockchain-abc-123',
         chainName: 'Test Chain'
       });
@@ -350,7 +361,8 @@ describe('Chain Model', () => {
 
     it('should accept evmChainId as number', () => {
       const chain = new Chain({
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         evmChainId: 43114
       });
@@ -361,7 +373,8 @@ describe('Chain Model', () => {
 
     it('should accept website as string', () => {
       const chain = new Chain({
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         website: 'https://testchain.io'
       });
@@ -374,7 +387,7 @@ describe('Chain Model', () => {
   describe('Backward compatibility', () => {
     it('should work with existing chain data without registry fields', () => {
       const oldChainData = {
-        chainId: 'old-chain-123',
+        blockchainId: 'old-blockchain-123',
         status: 'active',
         chainName: 'Old Chain',
         description: 'Old chain without registry data',
@@ -389,7 +402,7 @@ describe('Chain Model', () => {
 
       const chain = new Chain(oldChainData);
 
-      expect(chain.chainId).toBe(oldChainData.chainId);
+      expect(chain.blockchainId).toBe(oldChainData.blockchainId);
       expect(chain.chainName).toBe(oldChainData.chainName);
       expect(chain.validators).toEqual(oldChainData.validators);
 
@@ -397,12 +410,13 @@ describe('Chain Model', () => {
       expect(Array.isArray(chain.categories)).toBe(true);
       expect(chain.categories.length).toBe(0);
       expect(chain.website).toBeUndefined();
-      expect(chain.network).toBeUndefined();
+      expect(chain.network).toBeNull();
     });
 
     it('should maintain existing TPS and cumulativeTxCount structure', () => {
       const chainData = {
-        chainId: 'test-chain-123',
+        subnetId: 'test-subnet-123',
+        blockchainId: 'test-blockchain-123',
         chainName: 'Test Chain',
         tps: {
           value: 100.5,

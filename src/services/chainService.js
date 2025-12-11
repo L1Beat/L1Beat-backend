@@ -42,7 +42,9 @@ class ChainService {
                 { $match: query },
                 {
                     $addFields: {
-                        validatorCount: { $size: { $ifNull: ["$validators", []] } }
+                        validatorCount: { $size: { $ifNull: ["$validators", []] } },
+                        // Ensure chainId is always set (fallback to blockchainId for legacy data)
+                        chainId: { $ifNull: ["$chainId", "$blockchainId"] }
                     }
                 },
                 {
@@ -161,17 +163,30 @@ class ChainService {
                 return cachedChain;
             }
 
-            // Try to find by subnetId first (most common), then evmChainId, then blockchainId
+            // Build query conditions - only include evmChainId if id is numeric
+            const conditions = [
+                { subnetId: id },
+                { blockchainId: id },
+                { chainId: id }
+            ];
+
+            // Only search by evmChainId if the id is a valid number
+            const numericId = parseInt(id, 10);
+            if (!isNaN(numericId) && String(numericId) === String(id)) {
+                conditions.push({ evmChainId: numericId });
+            }
+
             let chain = await Chain.findOne({
-                $or: [
-                    { subnetId: id },
-                    { evmChainId: id },
-                    { blockchainId: id }
-                ]
+                $or: conditions
             }).lean();
 
             if (!chain) {
                 throw new Error('Chain not found');
+            }
+
+            // Ensure chainId is set (fallback to blockchainId for legacy data)
+            if (!chain.chainId && chain.blockchainId) {
+                chain.chainId = chain.blockchainId;
             }
 
             // Cache the result for 5 minutes
