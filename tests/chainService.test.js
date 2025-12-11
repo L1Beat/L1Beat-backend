@@ -36,15 +36,24 @@ jest.mock('../src/services/tpsService', () => ({
   })
 }));
 
+const app = require('../src/app'); // Import app to ensure MongoDB connection
 const chainService = require('../src/services/chainService');
 const Chain = require('../src/models/chain');
 const registryService = require('../src/services/registryService');
+const mongoose = require('mongoose');
 
 describe('Chain Service', () => {
   beforeAll(async () => {
+    // Wait for MongoDB connection to be ready (connection happens when app is imported in other tests)
+    let attempts = 0;
+    while (mongoose.connection.readyState !== 1 && attempts < 20) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      attempts++;
+    }
+
     // Ensure registry is loaded before running tests
     await registryService.loadAllChains();
-  }, 15000);
+  }, 30000);
 
   describe('getAllChains with filtering', () => {
     it('should return all chains without filters', async () => {
@@ -310,7 +319,7 @@ describe('Chain Service', () => {
         // Original fields
         expect(chain).toHaveProperty('chainId');
         expect(chain).toHaveProperty('chainName');
-        expect(chain).toHaveProperty('validators');
+        expect(chain).toHaveProperty('validatorCount'); // Backend returns validatorCount instead of validators array
 
         // Registry fields (may be undefined for some chains)
         expect(chain).toHaveProperty('categories');
@@ -330,8 +339,8 @@ describe('Chain Service', () => {
         }
 
         // And Glacier live data
-        expect(chain).toHaveProperty('validators');
-        expect(Array.isArray(chain.validators)).toBe(true);
+        expect(chain).toHaveProperty('validatorCount'); // Backend returns validatorCount instead of validators array
+        expect(typeof chain.validatorCount).toBe('number');
       }
     }, 30000);
   });

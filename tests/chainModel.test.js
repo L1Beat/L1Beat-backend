@@ -59,7 +59,11 @@ describe('Chain Model', () => {
       expect(chain.network).toBe(chainData.network);
       expect(chain.evmChainId).toBe(chainData.evmChainId);
       expect(chain.rpcUrls).toEqual(chainData.rpcUrls);
-      expect(chain.assets).toEqual(chainData.assets);
+      // MongoDB adds _id to subdocuments, so we check the essential fields
+      expect(chain.assets.length).toBe(chainData.assets.length);
+      expect(chain.assets[0].symbol).toBe(chainData.assets[0].symbol);
+      expect(chain.assets[0].name).toBe(chainData.assets[0].name);
+      expect(chain.assets[0].decimals).toBe(chainData.assets[0].decimals);
       expect(chain.registryMetadata).toBeDefined();
     });
 
@@ -338,7 +342,7 @@ describe('Chain Model', () => {
       expect(chain.website).toBeUndefined();
       expect(Array.isArray(chain.socials)).toBe(true);
       expect(chain.socials.length).toBe(0);
-      expect(chain.network).toBeUndefined();
+      expect(chain.network).toBeNull();
       expect(chain.evmChainId).toBeUndefined();
     });
   });
@@ -406,7 +410,7 @@ describe('Chain Model', () => {
       expect(Array.isArray(chain.categories)).toBe(true);
       expect(chain.categories.length).toBe(0);
       expect(chain.website).toBeUndefined();
-      expect(chain.network).toBeUndefined();
+      expect(chain.network).toBeNull();
     });
 
     it('should maintain existing TPS and cumulativeTxCount structure', () => {

@@ -66,6 +66,11 @@ const chainSchema = new mongoose.Schema({
         name: String,
         decimals: Number
     },
+    assets: [{
+        symbol: String,
+        name: String,
+        decimals: Number
+    }],
     registryMetadata: {
         folderName: String,
         lastUpdated: Date,

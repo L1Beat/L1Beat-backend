@@ -16,8 +16,8 @@ router.get('/chains/:chainId/tps/history', validate(validators.getTpsHistory), a
     res.json({
       success: true,
       chainId,
-      count: data.length,
-      data
+      count: data ? data.length : 0,
+      data: data || []
     });
   } catch (error) {
     logger.error('TPS History Error:', { chainId: req.params.chainId, error: error.message });
