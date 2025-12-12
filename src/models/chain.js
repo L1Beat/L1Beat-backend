@@ -4,6 +4,8 @@ const chainSchema = new mongoose.Schema({
     subnetId: { type: String, required: true, unique: true },
     blockchainId: { type: String, unique: true, sparse: true },
     chainId: { type: String, index: true },
+    isL1: Boolean,
+    sybilResistanceType: String,
     status: String,
     chainName: String,
     description: String,
@@ -64,7 +66,8 @@ const chainSchema = new mongoose.Schema({
     nativeToken: {
         symbol: String,
         name: String,
-        decimals: Number
+        decimals: Number,
+        logoUri: String
     },
     assets: [{
         symbol: String,

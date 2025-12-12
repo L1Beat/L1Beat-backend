@@ -75,6 +75,8 @@ class RegistryService {
         subnetId: registryData.subnetId,
         blockchainId: chainData.blockchainId,
         chainId: chainData.blockchainId,
+        isL1: registryData.isL1,
+        sybilResistanceType: chainData.sybilResistanceType,
         chainName: chainData.name || registryData.name,
         chainLogoUri: registryData.logo,
         description: chainData.description || registryData.description,
@@ -95,7 +97,12 @@ class RegistryService {
           ? chainData.rpcUrls[0]
           : undefined,
 
-        nativeToken: chainData.nativeToken || {},
+        nativeToken: {
+          symbol: chainData.nativeToken?.symbol,
+          name: chainData.nativeToken?.name,
+          decimals: chainData.nativeToken?.decimals,
+          logoUri: chainData.nativeToken?.logoUri
+        },
 
         registryMetadata: {
           folderName: folderName,
