@@ -16,8 +16,8 @@ router.get('/chains/:chainId/tps/history', validate(validators.getTpsHistory), a
     res.json({
       success: true,
       chainId,
-      count: data.length,
-      data
+      count: data ? data.length : 0,
+      data: data || []
     });
   } catch (error) {
     logger.error('TPS History Error:', { chainId: req.params.chainId, error: error.message });
@@ -54,14 +54,14 @@ router.get('/tps/network/latest', async (req, res) => {
     const data = await tpsService.getNetworkTps();
     res.json({
       success: true,
-      data,
+      data: data || null,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     logger.error('Network TPS Error:', { error: error.message });
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
@@ -73,15 +73,15 @@ router.get('/tps/network/history', async (req, res) => {
     const data = await tpsService.getNetworkTpsHistory(days);
     res.json({
       success: true,
-      data,
-      count: data.length,
+      data: data || [],
+      count: data ? data.length : 0,
       period: `${days} days`
     });
   } catch (error) {
     logger.error('Network TPS History Error:', { days: req.query.days, error: error.message });
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });

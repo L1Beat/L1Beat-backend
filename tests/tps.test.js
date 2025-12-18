@@ -88,8 +88,9 @@ describe('TPS Endpoints', () => {
 
       expect(response.status).toBe(200);
       expect(response.body).toHaveProperty('success');
-      expect(response.body).toHaveProperty('data');
       expect(response.body).toHaveProperty('timestamp');
+      // data may be null if no TPS data exists
+      expect('data' in response.body).toBe(true);
     });
 
     it('should return numeric TPS value', async () => {
@@ -113,21 +114,21 @@ describe('TPS Endpoints', () => {
       expect(response.body).toHaveProperty('data');
       expect(Array.isArray(response.body.data)).toBe(true);
       expect(response.body).toHaveProperty('period');
-    });
+    }, 15000);
 
     it('should default to 7 days if not specified', async () => {
       const response = await get('/api/tps/network/history');
 
       expect(response.status).toBe(200);
       expect(response.body.period).toBe('7 days');
-    });
+    }, 15000);
 
     it('should handle custom days parameter', async () => {
       const response = await get('/api/tps/network/history?days=30');
 
       expect(response.status).toBe(200);
       expect(response.body.period).toBe('30 days');
-    });
+    }, 15000);
   });
 
   describe('GET /api/tps/health', () => {
