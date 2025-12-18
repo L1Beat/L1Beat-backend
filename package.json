@@ -7,6 +7,7 @@
     "start": "NODE_ENV=production node src/app.js",
     "dev": "NODE_ENV=development nodemon src/app.js",
     "seed-authors": "node src/scripts/seedAuthors.js",
+    "populate-tokens": "node scripts/populate-native-tokens.js",
     "vercel-build": "echo hello",
     "test": "cross-env NODE_ENV=test jest --verbose --detectOpenHandles",
     "test:watch": "cross-env NODE_ENV=test jest --watch"
@@ -23,6 +24,7 @@
     "express-rate-limit": "^7.5.0",
     "express-validator": "^7.2.1",
     "helmet": "^8.0.0",
+    "l1beat-l1-registry": "^1.1.0",
     "mongoose": "^8.8.1",
     "node-cron": "^3.0.3",
     "remark": "^15.0.1",

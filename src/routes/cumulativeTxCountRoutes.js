@@ -17,8 +17,8 @@ router.get('/chains/:chainId/cumulativeTxCount/history', validate(validators.get
     res.json({
       success: true,
       chainId,
-      count: data.length,
-      data
+      count: data ? data.length : 0,
+      data: data || []
     });
   } catch (error) {
     logger.error('CumulativeTxCount History Error:', { chainId: req.params.chainId, error: error.message });
@@ -38,7 +38,7 @@ router.get('/chains/:chainId/cumulativeTxCount/latest', validate(validators.getC
     res.json({
       success: true,
       chainId,
-      data,
+      data: data || null,
       timestamp: data ? new Date(data.timestamp * 1000).toISOString() : null
     });
   } catch (error) {

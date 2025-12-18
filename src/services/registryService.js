@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
 
-const REGISTRY_PATH = path.join(__dirname, '../../l1-registry/data');
+const registry = require('l1beat-l1-registry');
+const REGISTRY_PATH = registry.getDataPath();
 
 class RegistryService {
   constructor() {
@@ -73,6 +74,9 @@ class RegistryService {
       const parsed = {
         subnetId: registryData.subnetId,
         blockchainId: chainData.blockchainId,
+        chainId: chainData.blockchainId,
+        isL1: registryData.isL1,
+        sybilResistanceType: chainData.sybilResistanceType,
         chainName: chainData.name || registryData.name,
         chainLogoUri: registryData.logo,
         description: chainData.description || registryData.description,
@@ -93,7 +97,12 @@ class RegistryService {
           ? chainData.rpcUrls[0]
           : undefined,
 
-        assets: chainData.assets || [],
+        nativeToken: {
+          symbol: chainData.nativeToken?.symbol,
+          name: chainData.nativeToken?.name,
+          decimals: chainData.nativeToken?.decimals,
+          logoUri: chainData.nativeToken?.logoUri
+        },
 
         registryMetadata: {
           folderName: folderName,
@@ -155,7 +164,10 @@ class RegistryService {
             {
               $set: {
                 subnetId: chainData.subnetId,
+                isL1: chainData.isL1,
+                sybilResistanceType: chainData.sybilResistanceType,
                 blockchainId: chainData.blockchainId,
+                chainId: chainData.chainId || chainData.blockchainId,
                 chainName: chainData.chainName,
                 chainLogoUri: chainData.chainLogoUri,
                 description: chainData.description,
@@ -173,7 +185,7 @@ class RegistryService {
                 rpcUrls: chainData.rpcUrls,
                 rpcUrl: chainData.rpcUrl,
 
-                assets: chainData.assets,
+                nativeToken: chainData.nativeToken,
                 registryMetadata: chainData.registryMetadata,
               }
             },
