@@ -1,7 +1,6 @@
 const Chain = require('../models/chain');
 const axios = require('axios');
 const config = require('../config/config');
-const tpsService = require('../services/tpsService');
 const cacheManager = require('../utils/cacheManager');
 const logger = require('../utils/logger');
 
@@ -49,103 +48,21 @@ class ChainService {
                 },
                 {
                     $project: {
+                        _id: 0,
+                        __v: 0,
                         validators: 0,
-                        registryMetadata: 0
+                        registryMetadata: 0,
+                        assets: 0
                     }
                 }
             ]);
 
             logger.info(`Fetched ${chains.length} chains in ${Date.now() - startTime}ms`);
 
-            // Collect all valid chain IDs for batch fetching
-            const chainIdMap = new Map(); // Maps chainIdForTps -> chain object
-            chains.forEach(chain => {
-                const chainIdForTps = chain.evmChainId || chain.chainId;
-                if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-                    chainIdMap.set(String(chainIdForTps), chain);
-                }
-            });
-
-            const chainIds = Array.from(chainIdMap.keys());
-            logger.info(`Found ${chainIds.length} chains with valid numeric IDs for metrics fetch`);
-
-            if (chainIds.length === 0) {
-                // No chains with valid IDs, return as-is
-                return chains;
-            }
-
-            // Batch fetch latest TPS for all chains in a single aggregation query
-            const batchStartTime = Date.now();
-            const TPS = require('../models/tps');
-            const CumulativeTxCount = require('../models/cumulativeTxCount');
-
-            // Fetch all latest TPS records in one aggregation
-            const tpsRecords = await TPS.aggregate([
-                { $match: { chainId: { $in: chainIds } } },
-                { $sort: { chainId: 1, timestamp: -1 } },
-                {
-                    $group: {
-                        _id: '$chainId',
-                        value: { $first: '$value' },
-                        timestamp: { $first: '$timestamp' }
-                    }
-                }
-            ]);
-
-            // Fetch all latest TxCount records in one aggregation
-            const txCountRecords = await CumulativeTxCount.aggregate([
-                { $match: { chainId: { $in: chainIds } } },
-                { $sort: { chainId: 1, timestamp: -1 } },
-                {
-                    $group: {
-                        _id: '$chainId',
-                        value: { $first: '$value' },
-                        timestamp: { $first: '$timestamp' }
-                    }
-                }
-            ]);
-
-            logger.info(`Batch fetched metrics for ${chainIds.length} chains in ${Date.now() - batchStartTime}ms (TPS: ${tpsRecords.length}, TxCount: ${txCountRecords.length})`);
-
-            // Create Maps for O(1) lookup
-            const tpsMap = new Map(tpsRecords.map(r => [r._id, { value: r.value, timestamp: r.timestamp }]));
-            const txCountMap = new Map(txCountRecords.map(r => [r._id, { value: r.value, timestamp: r.timestamp }]));
-
-            // Merge metrics data with chains in-memory
-            const chainsWithMetrics = chains.map(chain => {
-                const chainIdForTps = String(chain.evmChainId || chain.chainId);
-
-                if (!chainIdMap.has(chainIdForTps)) {
-                    // Chain doesn't have valid numeric ID
-                    return {
-                        ...chain,
-                        tps: null,
-                        cumulativeTxCount: null
-                    };
-                }
-
-                const tpsData = tpsMap.get(chainIdForTps);
-                const txCountData = txCountMap.get(chainIdForTps);
-
-                return {
-                    ...chain,
-                    tps: tpsData ? {
-                        value: parseFloat(tpsData.value).toFixed(2),
-                        timestamp: tpsData.timestamp
-                    } : null,
-                    cumulativeTxCount: txCountData ? {
-                        value: txCountData.value,
-                        timestamp: txCountData.timestamp
-                    } : null
-                };
-            });
-
-            logger.info(`Total getAllChains execution time: ${Date.now() - startTime}ms`);
-
             // Cache the result for 5 minutes
-            cacheManager.set(cacheKey, chainsWithMetrics, config.cache.chains);
+            cacheManager.set(cacheKey, chains, config.cache.chains);
 
-            return chainsWithMetrics;
+            return chains;
         } catch (error) {
             logger.error('Error fetching chains:', { error: error.message });
             throw new Error(`Error fetching chains: ${error.message}`);
