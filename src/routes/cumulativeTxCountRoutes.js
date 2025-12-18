@@ -50,6 +50,60 @@ router.get('/chains/:chainId/cumulativeTxCount/latest', validate(validators.getC
   }
 });
 
+// Get latest cumulative tx count for all chains in a single call
+router.get('/cumulativeTxCount/all/latest', async (req, res) => {
+  try {
+    // Get all chains with valid numeric IDs
+    const chains = await Chain.find({
+      evmChainId: { $exists: true, $ne: null }
+    }).select('evmChainId chainName subnetId').lean();
+
+    const chainIds = chains.map(c => String(c.evmChainId));
+
+    // Fetch latest cumulative tx count for all chains in one aggregation
+    const txCountRecords = await CumulativeTxCount.aggregate([
+      { $match: { chainId: { $in: chainIds } } },
+      { $sort: { chainId: 1, timestamp: -1 } },
+      {
+        $group: {
+          _id: '$chainId',
+          value: { $first: '$value' },
+          timestamp: { $first: '$timestamp' }
+        }
+      }
+    ]);
+
+    // Create a map for O(1) lookup
+    const txCountMap = new Map(txCountRecords.map(r => [r._id, r]));
+
+    // Build response with chain info
+    const data = chains.map(chain => {
+      const txCount = txCountMap.get(String(chain.evmChainId));
+      return {
+        evmChainId: chain.evmChainId,
+        subnetId: chain.subnetId,
+        chainName: chain.chainName,
+        cumulativeTxCount: txCount ? {
+          value: txCount.value,
+          timestamp: txCount.timestamp
+        } : null
+      };
+    });
+
+    res.json({
+      success: true,
+      count: data.length,
+      data
+    });
+  } catch (error) {
+    logger.error('All CumulativeTxCount Error:', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Health check endpoint
 router.get('/cumulativeTxCount/health', async (req, res) => {
   try {
