@@ -177,22 +177,22 @@ class TeleporterService {
                     // Check if the message is within our time range
                     if (timestampInSeconds >= startTime) {
                         validMessages.push(message);
-                    } else {
-                        // Found a message older than our time window, stop pagination
-                        reachedTimeLimit = true;
-                        logger.info(`[TELEPORTER ${updateLabel}] Found message older than ${hoursAgo} hours, stopping pagination`, {
-                            messageTimestamp: new Date(timestampInSeconds * 1000).toISOString(),
-                            startTime: new Date(startTime * 1000).toISOString(),
-                            page: pageCount,
-                            messageId: message.messageId || 'unknown'
-                        });
-                        break;
                     }
+                    // Don't stop on individual old messages - they may not be chronological
                 }
 
                 // Add valid messages from this page to our collection
                 allMessages = allMessages.concat(validMessages);
                 nextPageToken = response.data?.nextPageToken;
+
+                // Only stop if we got a full page with NO valid messages
+                // This means we've definitely gone past our time range
+                if (validMessages.length === 0 && messages.length > 0) {
+                    reachedTimeLimit = true;
+                    logger.info(`[TELEPORTER ${updateLabel}] Full page of old messages (0/${messages.length} valid), stopping pagination`, {
+                        page: pageCount
+                    });
+                }
 
                 // Calculate estimated time remaining for weekly updates
                 const elapsedTime = (Date.now() - fetchStartTime) / 1000;
