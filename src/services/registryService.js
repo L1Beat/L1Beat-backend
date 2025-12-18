@@ -164,6 +164,8 @@ class RegistryService {
             {
               $set: {
                 subnetId: chainData.subnetId,
+                isL1: chainData.isL1,
+                sybilResistanceType: chainData.sybilResistanceType,
                 blockchainId: chainData.blockchainId,
                 chainId: chainData.chainId || chainData.blockchainId,
                 chainName: chainData.chainName,
