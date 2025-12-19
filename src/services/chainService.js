@@ -4,8 +4,6 @@ const config = require('../config/config');
 const cacheManager = require('../utils/cacheManager');
 const logger = require('../utils/logger');
 
-const SNOWPEER_BASE_URL = 'https://api.snowpeer.io/v1';
-const DEFAULT_NETWORK = 'mainnet';
 
 class ChainService {
     constructor() {
@@ -285,16 +283,19 @@ class ChainService {
                     const data = await response.json();
                     
                     // L1Validators response format is different, so we need to transform it
-                    const transformedValidators = (data.validators || []).map(v => ({
-                        nodeId: v.nodeId || '',
-                        txHash: v.validationId || v.validationIdHex || '',
-                        amountStaked: v.weight ? v.weight.toString() : '0',
-                        startTimestamp: v.creationTimestamp || 0,
-                        endTimestamp: 0, // End timestamp might not be available
-                        validationStatus: 'active',
-                        uptimePerformance: 100, // Default value
-                        avalancheGoVersion: '' // Not available in this endpoint
-                    }));
+                    // Only include validators with remainingBalance > 0 (active validators)
+                    const transformedValidators = (data.validators || [])
+                        .filter(v => v.remainingBalance > 0)
+                        .map(v => ({
+                            nodeId: v.nodeId || '',
+                            txHash: v.validationId || v.validationIdHex || '',
+                            weight: v.weight ? v.weight.toString() : '0',
+                            startTimestamp: v.creationTimestamp || 0,
+                            endTimestamp: 0, // End timestamp might not be available
+                            validationStatus: 'active',
+                            remainingBalance: v.remainingBalance.toString(),
+                            avalancheGoVersion: '' // Not available in this endpoint
+                        }));
                     
                     allValidators = transformedValidators;
 
@@ -325,16 +326,18 @@ class ChainService {
                         
                         const nextPageData = await nextPageResponse.json();
                         
-                        const nextPageValidators = (nextPageData.validators || []).map(v => ({
-                            nodeId: v.nodeId || '',
-                            txHash: v.validationId || v.validationIdHex || '',
-                            amountStaked: v.weight ? v.weight.toString() : '0',
-                            startTimestamp: v.creationTimestamp || 0,
-                            endTimestamp: 0,
-                            validationStatus: 'active',
-                            uptimePerformance: 100,
-                            avalancheGoVersion: ''
-                        }));
+                        const nextPageValidators = (nextPageData.validators || [])
+                            .filter(v => v.remainingBalance > 0)
+                            .map(v => ({
+                                nodeId: v.nodeId || '',
+                                txHash: v.validationId || v.validationIdHex || '',
+                                weight: v.weight ? v.weight.toString() : '0',
+                                startTimestamp: v.creationTimestamp || 0,
+                                endTimestamp: 0,
+                                validationStatus: 'active',
+                                remainingBalance: v.remainingBalance.toString(),
+                                avalancheGoVersion: ''
+                            }));
                         
                         allValidators = [...allValidators, ...nextPageValidators];
                         l1NextPageToken = nextPageData.nextPageToken;
@@ -383,71 +386,6 @@ class ChainService {
 
                 throw error;
             }
-        }
-    }
-
-    /**
-     * Fetch validators from SnowPeer API
-     */
-    async fetchSnowPeerValidators(subnetId, chainId) {
-        if (!subnetId) return [];
-
-        try {
-            logger.info(`Fetching validators from SnowPeer for subnet ${subnetId}`);
-
-            const response = await this.retryRequest(async () => {
-                return await axios.get(`${SNOWPEER_BASE_URL}/blockchains`, {
-                    params: {
-                        network: DEFAULT_NETWORK,
-                        subnetID: subnetId
-                    },
-                    timeout: config.api?.snowpeer?.timeout || 30000,
-                });
-            });
-
-            const apiResponse = response.data;
-            const blockchains = apiResponse.blockchains || [];
-
-            // Find the blockchain matching our chainId or use the first one if there's only one
-            let blockchain = blockchains.find(b => b.blockchainID === chainId || b.chainID === chainId);
-            if (!blockchain && blockchains.length === 1) {
-                blockchain = blockchains[0];
-            }
-
-            if (!blockchain) {
-                logger.warn(`No blockchain found in SnowPeer response for subnet ${subnetId}`);
-                return [];
-            }
-
-            // Extract validators from the blockchain object
-            const validators = blockchain.validators || [];
-
-            if (validators.length === 0) {
-                logger.info(`No validators found in SnowPeer for subnet ${subnetId}`);
-                return [];
-            }
-
-            // Transform SnowPeer validator format to our schema
-            const transformedValidators = validators.map(v => ({
-                nodeId: v.nodeID || v.nodeId || '',
-                txHash: v.txID || v.txHash || '',
-                amountStaked: v.weight ? v.weight.toString() : (v.stake ? v.stake.toString() : '0'),
-                startTimestamp: v.startTime || v.startTimestamp || 0,
-                endTimestamp: v.endTime || v.endTimestamp || 0,
-                validationStatus: v.connected === false ? 'inactive' : 'active',
-                uptimePerformance: v.uptime || 100,
-                avalancheGoVersion: v.version || ''
-            }));
-
-            logger.info(`Successfully fetched ${transformedValidators.length} validators from SnowPeer for subnet ${subnetId}`);
-            return transformedValidators;
-
-        } catch (error) {
-            logger.error(`Error fetching SnowPeer validators for subnet ${subnetId}:`, {
-                error: error.message,
-                status: error.response?.status
-            });
-            return [];
         }
     }
 

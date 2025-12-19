@@ -32,11 +32,13 @@ const chainSchema = new mongoose.Schema({
     validators: [{
         nodeId: String,
         txHash: String,
-        amountStaked: String,
+        amountStaked: String,      // From /validators endpoint (traditional subnets)
+        weight: String,            // From /l1Validators endpoint (L1 chains)
         startTimestamp: Number,
         endTimestamp: Number,
         validationStatus: String,
         uptimePerformance: Number,
+        remainingBalance: String,
         avalancheGoVersion: String
     }],
     lastUpdated: { type: Date, default: Date.now },
