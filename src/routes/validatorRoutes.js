@@ -62,13 +62,19 @@ router.get('/validators/network/total', async (req, res) => {
       validators: { $exists: true, $ne: [] }
     }).select('validators').lean();
 
-    const totalValidators = chains.reduce((sum, chain) =>
-      sum + (chain.validators ? chain.validators.length : 0), 0
-    );
+    // Collect unique validators by nodeId
+    const uniqueNodeIds = new Set();
+    chains.forEach(chain => {
+      if (chain.validators) {
+        chain.validators.forEach(v => {
+          if (v.nodeId) uniqueNodeIds.add(v.nodeId);
+        });
+      }
+    });
 
     res.json({
       success: true,
-      totalValidators,
+      totalValidators: uniqueNodeIds.size,
       chainsWithValidators: chains.length,
       timestamp: new Date().toISOString()
     });
