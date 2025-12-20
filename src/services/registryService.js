@@ -191,6 +191,12 @@ class RegistryService {
 
                 nativeToken: chainData.nativeToken,
                 registryMetadata: chainData.registryMetadata,
+              },
+              $setOnInsert: {
+                tps: null,
+                cumulativeTxCount: null,
+                validators: []
+              }
             },
             {
               upsert: true,
