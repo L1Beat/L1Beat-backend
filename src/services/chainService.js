@@ -41,7 +41,11 @@ class ChainService {
                     $addFields: {
                         validatorCount: { $size: { $ifNull: ["$validators", []] } },
                         // Ensure chainId is always set (fallback to blockchainId for legacy data)
-                        chainId: { $ifNull: ["$chainId", "$blockchainId"] }
+                        chainId: { $ifNull: ["$chainId", "$blockchainId"] },
+                        // Ensure tps is always present
+                        tps: { $ifNull: ["$tps", null] },
+                        // Ensure cumulativeTxCount is always present
+                        cumulativeTxCount: { $ifNull: ["$cumulativeTxCount", null] }
                     }
                 },
                 {
