@@ -97,6 +97,8 @@ class RegistryService {
           ? chainData.rpcUrls[0]
           : undefined,
 
+        explorerUrl: chainData.explorerUrl || undefined,
+
         nativeToken: {
           symbol: chainData.nativeToken?.symbol,
           name: chainData.nativeToken?.name,
@@ -185,9 +187,10 @@ class RegistryService {
                 rpcUrls: chainData.rpcUrls,
                 rpcUrl: chainData.rpcUrl,
 
+                explorerUrl: chainData.explorerUrl,
+
                 nativeToken: chainData.nativeToken,
                 registryMetadata: chainData.registryMetadata,
-              }
             },
             {
               upsert: true,
