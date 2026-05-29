@@ -6,7 +6,9 @@
 
 // Chain model is required by the factory but unused in these query paths.
 jest.mock('../src/models/chain', () => ({ find: jest.fn() }));
+jest.mock('axios');
 
+const axios = require('axios');
 const createMetricService = require('../src/services/metricService');
 
 /**
@@ -95,5 +97,24 @@ describe('createMetricService aggregation', () => {
     expect(() => createMetricService({ metricPath: 'x', label: 'X' })).toThrow(/model/);
     expect(() => createMetricService({ model: {}, label: 'X' })).toThrow(/metricPath/);
     expect(() => createMetricService({ model: {}, metricPath: 'x' })).toThrow(/label/);
+  });
+});
+
+describe('createMetricService updateData failure handling', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('returns a failure result (not undefined) when every attempt gets a non-array response', async () => {
+    // API responds 200 with a body that has no `results` array, on every retry.
+    axios.get.mockResolvedValue({ data: {} });
+
+    const svc = createMetricService({ model: {}, metricPath: 'x', label: 'X' });
+    const result = await svc.updateData('123', 2); // retryCount=2
+
+    // The bug this guards: falling off the retry loop returned undefined, which
+    // crashed updateAllChains on `undefined.success`.
+    expect(result).toBeDefined();
+    expect(result.success).toBe(false);
+    expect(result.chainId).toBe('123');
+    expect(result.error).toMatch(/no valid response/i);
   });
 });

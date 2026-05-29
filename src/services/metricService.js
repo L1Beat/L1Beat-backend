@@ -188,6 +188,16 @@ function createMetricService({ model, metricPath, label, aggregation = 'sum' }) 
           await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
         }
       }
+
+      // All retries exhausted without ever getting a valid response (e.g. the
+      // API kept returning a 200 with a non-array `results` payload, hitting the
+      // `continue` above each attempt). Return an explicit failure result so
+      // updateAllChains can count it instead of crashing on `undefined.success`.
+      return {
+        success: false,
+        chainId,
+        error: 'No valid response after all retries'
+      };
     });
   }
 
