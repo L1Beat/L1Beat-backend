@@ -190,10 +190,14 @@ class TeleporterService {
                         ? Math.floor(messageTimestamp / 1000) 
                         : messageTimestamp;
 
-                    // Check if the message is within our time range. The upper
-                    // bound matters for windowed weekly fetches (endTime < now);
-                    // for daily fetches endTime is "now" so it is a no-op.
-                    if (timestampInSeconds >= startTime && timestampInSeconds <= endTime) {
+                    // Half-open window [startTime, endTime): the upper bound is
+                    // exclusive so adjacent weekly day-windows (where one day's
+                    // startTime equals the next day's endTime) never both claim
+                    // a message landing exactly on the shared boundary — which
+                    // would double-count it after merge. For daily fetches
+                    // endTime is "now", so at most a message at the current
+                    // instant is deferred to the next run.
+                    if (timestampInSeconds >= startTime && timestampInSeconds < endTime) {
                         validMessages.push(message);
                     }
                     // Don't stop on individual old messages - they may not be chronological

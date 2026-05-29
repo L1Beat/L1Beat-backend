@@ -159,7 +159,17 @@ app.get('/health/ready', (req, res) => {
 // Deep dependency probe. Actively pings external APIs, so it is intentionally
 // kept off the main /health path to avoid latency and burning rate limits on
 // every uptime check. Call this on demand or from a low-frequency monitor.
+// Cache the deep probe briefly so this endpoint can't be used to hammer the
+// upstream APIs (and burn the rate budget the cron jobs depend on): the outbound
+// probes run at most once per TTL regardless of request volume.
+const DEP_HEALTH_TTL_MS = 30 * 1000;
+let depHealthCache = null; // { expiresAt, statusCode, body }
+
 app.get('/health/dependencies', async (req, res) => {
+  if (depHealthCache && depHealthCache.expiresAt > Date.now()) {
+    return res.status(depHealthCache.statusCode).json({ ...depHealthCache.body, cached: true });
+  }
+
   const probe = async (name, url) => {
     if (!url) return { name, status: 'unconfigured' };
     const startedAt = Date.now();
@@ -182,21 +192,25 @@ app.get('/health/dependencies', async (req, res) => {
     probe('metrics', config.api && config.api.metrics && config.api.metrics.baseUrl)
   ]);
 
-  const dependencies = {
-    mongodb: mongoConnected ? 'connected' : 'disconnected',
-    glacier,
-    metrics
-  };
-
+  // 'unconfigured' counts as unhealthy: GLACIER_API_BASE / METRICS_API_BASE are
+  // required, so a missing base URL is a real misconfiguration, not "fine".
   const healthy = mongoConnected &&
-    glacier.status !== 'unreachable' &&
-    metrics.status !== 'unreachable';
+    glacier.status === 'reachable' &&
+    metrics.status === 'reachable';
 
-  res.status(healthy ? 200 : 503).json({
+  const body = {
     status: healthy ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
-    dependencies
-  });
+    dependencies: {
+      mongodb: mongoConnected ? 'connected' : 'disconnected',
+      glacier,
+      metrics
+    }
+  };
+  const statusCode = healthy ? 200 : 503;
+
+  depHealthCache = { expiresAt: Date.now() + DEP_HEALTH_TTL_MS, statusCode, body };
+  res.status(statusCode).json(body);
 });
 
 // Single initialization point for data updates
