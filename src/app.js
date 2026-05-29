@@ -5,11 +5,11 @@ const cron = require('node-cron');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const pLimit = require('p-limit');
+const mongoose = require('mongoose');
+const axios = require('axios');
 const config = require('./config/config');
 const connectDB = require('./config/db');
 const chainRoutes = require('./routes/chainRoutes');
-const fetchAndUpdateData = require('./utils/fetchGlacierData');
-const chainDataService = require('./services/chainDataService');
 const Chain = require('./models/chain');
 const chainService = require('./services/chainService');
 const tpsRoutes = require('./routes/tpsRoutes');
@@ -54,11 +54,9 @@ process.on('uncaughtException', (error) => {
 
 const app = express();
 
-// Check if we're running on Vercel
-const isVercel = process.env.VERCEL === '1';
-
-// Trust proxy when running on Vercel or other cloud platforms
-if (isVercel || config.isProduction) {
+// Trust proxy in production (the app runs behind a reverse proxy / load
+// balancer on DigitalOcean).
+if (config.isProduction) {
   logger.info('Running behind a proxy, setting trust proxy to true');
   app.set('trust proxy', 1);
 }
@@ -130,8 +128,75 @@ app.use(cors({
 app.use(express.json({ limit: '1mb' }));
 
 // Health check endpoint - MUST be before DB connection for deployment health checks
+// Liveness: is the process up and serving? Always 200 while running. MongoDB
+// state is reported for visibility but does not affect liveness. Kept cheap
+// (no external I/O) so uptime checks can hit it frequently.
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    dependencies: {
+      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+    }
+  });
+});
+
+// Readiness: should this instance receive traffic right now? Returns 503 when
+// MongoDB is not connected so a load balancer can drain it. Still cheap — only
+// inspects the local connection state, no external I/O.
+app.get('/health/ready', (req, res) => {
+  const mongoConnected = mongoose.connection.readyState === 1;
+  res.status(mongoConnected ? 200 : 503).json({
+    status: mongoConnected ? 'ok' : 'not_ready',
+    timestamp: new Date().toISOString(),
+    dependencies: {
+      mongodb: mongoConnected ? 'connected' : 'disconnected'
+    }
+  });
+});
+
+// Deep dependency probe. Actively pings external APIs, so it is intentionally
+// kept off the main /health path to avoid latency and burning rate limits on
+// every uptime check. Call this on demand or from a low-frequency monitor.
+app.get('/health/dependencies', async (req, res) => {
+  const probe = async (name, url) => {
+    if (!url) return { name, status: 'unconfigured' };
+    const startedAt = Date.now();
+    try {
+      await axios.get(url, {
+        timeout: 5000,
+        // Any HTTP response means the host is reachable; we only care about
+        // connectivity here, not the specific status code.
+        validateStatus: () => true
+      });
+      return { name, status: 'reachable', latencyMs: Date.now() - startedAt };
+    } catch (error) {
+      return { name, status: 'unreachable', error: error.message };
+    }
+  };
+
+  const mongoConnected = mongoose.connection.readyState === 1;
+  const [glacier, metrics] = await Promise.all([
+    probe('glacier', config.api && config.api.glacier && config.api.glacier.baseUrl),
+    probe('metrics', config.api && config.api.metrics && config.api.metrics.baseUrl)
+  ]);
+
+  const dependencies = {
+    mongodb: mongoConnected ? 'connected' : 'disconnected',
+    glacier,
+    metrics
+  };
+
+  const healthy = mongoConnected &&
+    glacier.status !== 'unreachable' &&
+    metrics.status !== 'unreachable';
+
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'degraded',
+    timestamp: new Date().toISOString(),
+    dependencies
+  });
 });
 
 // Single initialization point for data updates
@@ -637,12 +702,12 @@ if (missingEnvVars.length > 0) {
   // Still allow the server to start (for development convenience)
 }
 
-// For Vercel, we need to export the app
+// Export the app so tests (supertest) can mount it without binding a port.
 module.exports = app;
 
-// Only listen if not running on Vercel or in test mode
+// Only bind a port outside of tests (in tests supertest drives the app directly).
 const isTest = process.env.NODE_ENV === 'test';
-if (!isVercel && !isTest) {
+if (!isTest) {
   const server = app.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`, {
       environment: config.env,
@@ -656,4 +721,36 @@ if (!isVercel && !isTest) {
   server.on('error', (error) => {
     logger.error('Server error:', { error: error.message, stack: error.stack });
   });
+
+  // Graceful shutdown: stop accepting new connections, then close the DB
+  // connection so in-flight work can drain before the process exits.
+  let shuttingDown = false;
+  const gracefulShutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`Received ${signal}, shutting down gracefully...`);
+
+    // Hard limit so a hung connection can't block shutdown indefinitely.
+    const forceExit = setTimeout(() => {
+      logger.error('Graceful shutdown timed out, forcing exit');
+      process.exit(1);
+    }, 10000);
+    forceExit.unref();
+
+    server.close(async () => {
+      logger.info('HTTP server closed, no longer accepting connections');
+      try {
+        await mongoose.connection.close(false);
+        logger.info('MongoDB connection closed');
+      } catch (error) {
+        logger.error('Error closing MongoDB connection:', { error: error.message });
+      } finally {
+        clearTimeout(forceExit);
+        process.exit(0);
+      }
+    });
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }

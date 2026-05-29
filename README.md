@@ -6,7 +6,6 @@ A Node.js backend service for the L1Beat, providing API endpoints for Avalanche 
 
 - **Chain Data**: Fetch and store information about Avalanche chains
 - **Validator Data**: Track validators for each chain
-- **TVL Tracking**: Historical and current TVL data for Avalanche
 - **TPS Metrics**: Track transactions per second for each chain and the entire network
 - **Caching**: In-memory caching for improved performance
 - **Structured Logging**: Comprehensive logging system
@@ -15,7 +14,7 @@ A Node.js backend service for the L1Beat, providing API endpoints for Avalanche 
 ## Tech Stack
 
 - **Node.js** and **Express**: Backend framework
-- **MongoDB**: Database for storing chain, validator, TVL, and TPS data
+- **MongoDB**: Database for storing chain, validator, and TPS data
 - **Mongoose**: MongoDB object modeling
 - **Winston**: Structured logging
 - **Helmet**: Security headers
@@ -30,11 +29,6 @@ A Node.js backend service for the L1Beat, providing API endpoints for Avalanche 
 - `GET /api/chains`: Get all chains
 - `GET /api/chains/:chainId`: Get a specific chain by ID
 - `GET /api/chains/:chainId/validators`: Get validators for a specific chain
-
-### TVL Endpoints
-
-- `GET /api/tvl/history`: Get historical TVL data
-- `GET /api/tvl/health`: Check TVL data health
 
 ### TPS Endpoints
 
@@ -89,18 +83,12 @@ A Node.js backend service for the L1Beat, providing API endpoints for Avalanche 
 
 ### Production Deployment
 
-For production deployment, set `NODE_ENV=production` and ensure all environment variables are properly configured.
+The application runs as a long-lived Node.js process on DigitalOcean (it relies
+on in-process `node-cron` jobs and long-running background updates, so it must
+run as a persistent process — not a serverless function).
 
-#### Deploying to Vercel
-
-This application is configured for deployment on Vercel. To deploy:
-
-1. Install the Vercel CLI:
-   ```
-   npm install -g vercel
-   ```
-
-2. Create a `.env.production` file with your production environment variables:
+1. Set the production environment variables (e.g. via a `.env` file or the
+   process environment):
    ```
    NODE_ENV=production
    PROD_MONGODB_URI=your_production_mongodb_uri
@@ -108,27 +96,28 @@ This application is configured for deployment on Vercel. To deploy:
    UPDATE_API_KEY=your_production_update_key
    ```
 
-3. Run the deployment script:
+2. Install dependencies and start the server:
    ```
-   ./deploy.sh
+   npm ci
+   npm start
    ```
 
-Alternatively, you can deploy directly from the Vercel dashboard by connecting your GitHub repository.
+Run it under a process manager (e.g. PM2 or a systemd unit) so it restarts on
+crash, and place it behind a reverse proxy / load balancer (the app sets
+`trust proxy` in production). On `SIGTERM`/`SIGINT` the server shuts down
+gracefully, draining in-flight requests and closing the MongoDB connection.
 
 ## Scheduled Tasks
 
 The application runs several scheduled tasks:
 
-- TVL updates: Every 30 minutes
 - Chain and TPS updates: Every hour
-- TPS verification: Every 15 minutes
 
 ## Caching
 
 The application implements in-memory caching for frequently accessed data:
 
 - Chain data: 5 minutes
-- TVL history: 15 minutes
 - TPS data: 5 minutes
 
 ## Security
@@ -165,9 +154,6 @@ The following environment variables are required for the application to function
 - `GLACIER_API_TIMEOUT` - Timeout for Glacier API requests in milliseconds (default: 30000)
 - `GLACIER_VALIDATORS_ENDPOINT` - Endpoint for validators (default: /networks/mainnet/validators)
 - `GLACIER_L1VALIDATORS_ENDPOINT` - Endpoint for L1Validators (default: /networks/mainnet/l1Validators)
-
-- `DEFILLAMA_API_BASE` - Base URL for the DefiLlama API
-- `DEFILLAMA_API_TIMEOUT` - Timeout for DefiLlama API requests in milliseconds (default: 30000)
 
 - `METRICS_API_BASE` - Base URL for the Metrics API
 - `METRICS_API_TIMEOUT` - Timeout for Metrics API requests in milliseconds (default: 30000)
