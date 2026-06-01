@@ -96,7 +96,10 @@ class TpsService {
             headers['x-api-key'] = process.env.GLACIER_API_KEY;
           }
 
-          const response = await axios.get(`${config.api.metrics.baseUrl}/chains/${chainId}/metrics/avgTps`, {
+          // The metrics API's `avgTps` metric is rounded to whole integers. To get
+          // decimal precision we instead fetch the daily `txCount` and derive TPS
+          // ourselves as txCount / secondsElapsedInBucket (see bulkWrite below).
+          const response = await axios.get(`${config.api.metrics.baseUrl}/chains/${chainId}/metrics/txCount`, {
             params: {
               timeInterval: 'day',
               pageSize: 100  // Maximum allowed by API
@@ -150,21 +153,30 @@ class TpsService {
           // If we have valid data, proceed with update
           if (validTpsData.length > 0) {
             const result = await TPS.bulkWrite(
-              validTpsData.map(item => ({
-                updateOne: {
-                  filter: { 
-                    chainId: chainId,
-                    timestamp: Number(item.timestamp)
-                  },
-                  update: { 
-                    $set: { 
-                      value: parseFloat(item.value),
-                      lastUpdated: new Date() 
-                    }
-                  },
-                  upsert: true
-                }
-              })),
+              validTpsData.map(item => {
+                const timestamp = Number(item.timestamp);
+                // `timestamp` marks the start of the day-bucket; `value` is the tx
+                // count within it. Past buckets cover a full day (86400s); the
+                // in-progress bucket only covers the seconds elapsed so far. Dividing
+                // by elapsed seconds yields decimal TPS matching the API's avgTps.
+                const elapsedSeconds = Math.min(86400, currentTime - timestamp);
+                const tps = elapsedSeconds > 0 ? parseFloat(item.value) / elapsedSeconds : 0;
+                return {
+                  updateOne: {
+                    filter: {
+                      chainId: chainId,
+                      timestamp: timestamp
+                    },
+                    update: {
+                      $set: {
+                        value: parseFloat(tps.toFixed(2)),
+                        lastUpdated: new Date()
+                      }
+                    },
+                    upsert: true
+                  }
+                };
+              }),
               { ordered: false } // Continue processing even if some operations fail
             );
 
