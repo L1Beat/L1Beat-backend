@@ -10,6 +10,7 @@ class TeleporterService {
         this.UPDATE_INTERVAL = 60 * 60 * 1000; // 1 hour in milliseconds
         this.TIMEOUT_DAILY = 120000; // 120 seconds for daily updates (API is slow)
         this.TIMEOUT_WEEKLY = 120000; // 120 seconds for weekly updates
+        this._periodicUpdatesStarted = false;
 
         if (!this.GLACIER_API_KEY) {
             logger.warn('GLACIER_API_KEY not found in environment variables');
@@ -37,10 +38,25 @@ class TeleporterService {
      * @returns {Promise<Array>} Array of messages
      */
     async fetchICMMessages(hoursAgo = 24, updateType = 'daily', ownershipCheck = null) {
+        const endTime = Math.floor(Date.now() / 1000);
+        const startTime = endTime - (hoursAgo * 60 * 60);
+        return this.fetchICMMessagesInWindow(startTime, endTime, updateType, ownershipCheck);
+    }
+
+    /**
+     * Fetch ICM messages for an explicit [startTime, endTime] window (unix seconds).
+     * This is the pagination core shared by daily fetches and resumable weekly
+     * day-by-day fetches.
+     * @param {number} startTime - Window start (unix seconds, inclusive)
+     * @param {number} endTime - Window end (unix seconds, inclusive)
+     * @param {string} updateType - Type of update ('daily' or 'weekly') for logging/timeout
+     * @param {Function} ownershipCheck - Optional async function that returns false if we should stop
+     * @returns {Promise<Array>} Array of messages within the window
+     */
+    async fetchICMMessagesInWindow(startTime, endTime, updateType = 'weekly', ownershipCheck = null) {
         try {
-            const endTime = Math.floor(Date.now() / 1000);
-            const startTime = endTime - (hoursAgo * 60 * 60);
             const updateLabel = updateType.toUpperCase();
+            const hoursAgo = Math.max(1, Math.round((endTime - startTime) / (60 * 60)));
 
             const headers = {
                 'Accept': 'application/json',
@@ -174,8 +190,14 @@ class TeleporterService {
                         ? Math.floor(messageTimestamp / 1000) 
                         : messageTimestamp;
 
-                    // Check if the message is within our time range
-                    if (timestampInSeconds >= startTime) {
+                    // Half-open window [startTime, endTime): the upper bound is
+                    // exclusive so adjacent weekly day-windows (where one day's
+                    // startTime equals the next day's endTime) never both claim
+                    // a message landing exactly on the shared boundary — which
+                    // would double-count it after merge. For daily fetches
+                    // endTime is "now", so at most a message at the current
+                    // instant is deferred to the next run.
+                    if (timestampInSeconds >= startTime && timestampInSeconds < endTime) {
                         validMessages.push(message);
                     }
                     // Don't stop on individual old messages - they may not be chronological
@@ -543,6 +565,52 @@ class TeleporterService {
     /**
      * Update weekly teleporter data (last 7 days)
      */
+    /**
+     * Compute the [startTime, endTime] window (unix seconds) for a given day of
+     * the weekly fetch, anchored to a fixed reference end time.
+     * Day 1 is the most recent 24h; day 7 is the oldest.
+     * @param {number} anchorEndTime - Reference end of the 7-day window (unix seconds)
+     * @param {number} day - 1-based day index (1..7)
+     * @returns {{startTime: number, endTime: number}}
+     */
+    getWeeklyDayWindow(anchorEndTime, day) {
+        const DAY_SECONDS = 24 * 60 * 60;
+        return {
+            startTime: anchorEndTime - (day * DAY_SECONDS),
+            endTime: anchorEndTime - ((day - 1) * DAY_SECONDS)
+        };
+    }
+
+    /**
+     * Merge per-day partial results into a single aggregated weekly result.
+     * Sums message counts per chain pair across all days and totals the raw
+     * message count. Pure function (no I/O) so it is easy to unit test.
+     * @param {Array} partialResults - Array of { messageCount: [{sourceChain, destinationChain, messageCount}], totalMessages }
+     * @returns {{messageCounts: Array, totalMessages: number}}
+     */
+    mergePartialResults(partialResults) {
+        const counts = {};
+        let totalMessages = 0;
+
+        for (const dayResult of partialResults || []) {
+            totalMessages += dayResult.totalMessages || 0;
+            for (const pair of dayResult.messageCount || []) {
+                const key = `${pair.sourceChain}|${pair.destinationChain}`;
+                if (!counts[key]) {
+                    counts[key] = {
+                        sourceChain: pair.sourceChain,
+                        destinationChain: pair.destinationChain,
+                        messageCount: 0
+                    };
+                }
+                counts[key].messageCount += pair.messageCount;
+            }
+        }
+
+        const messageCounts = Object.values(counts).sort((a, b) => b.messageCount - a.messageCount);
+        return { messageCounts, totalMessages };
+    }
+
     async updateWeeklyData() {
         try {
             logger.info('[TELEPORTER WEEKLY] Starting weekly teleporter data update (last 7 days)');
@@ -634,37 +702,124 @@ class TeleporterService {
                 }
             };
 
-            // Fetch and process messages for the last 7 days (168 hours)
-            logger.info('[TELEPORTER WEEKLY] Fetching ICM messages for last 7 days (168 hours)...');
-            const messages = await this.fetchICMMessages(168, 'weekly', ownershipCheck); // 7 * 24 = 168 hours
-            logger.info(`[TELEPORTER WEEKLY] Fetched ${messages.length} raw messages from Glacier API`);
-            
-            const processedData = await this.processMessages(messages);
-            logger.info(`[TELEPORTER WEEKLY] Processed into ${processedData.length} unique chain pairs`);
+            // The 7-day fetch is split into 7 independent day-windows. Each
+            // completed day is persisted to partialResults so that if the
+            // process restarts mid-update (e.g. a redeploy), the next run
+            // resumes from the next unfetched day instead of starting over.
+            const WEEKLY_DAYS = 7;
+            const MAX_RESUME_AGE_MS = 24 * 60 * 60 * 1000; // Resume only if the run is still recent.
+
+            if (!updateState.progress) {
+                updateState.progress = {
+                    currentDay: 1, totalDays: WEEKLY_DAYS, daysCompleted: 0,
+                    currentChunk: 0, totalChunks: 6, messagesCollected: 0
+                };
+            }
+
+            const priorDaysCompleted = updateState.progress.daysCompleted || 0;
+            const priorPartial = Array.isArray(updateState.partialResults) ? updateState.partialResults : [];
+            const refEnd = updateState.referenceEndTime;
+            const canResume = priorDaysCompleted >= 1 &&
+                priorDaysCompleted < WEEKLY_DAYS &&
+                refEnd &&
+                priorPartial.length === priorDaysCompleted &&
+                (Date.now() - new Date(refEnd).getTime()) < MAX_RESUME_AGE_MS;
+
+            let anchorEndTime;
+            let daysCompleted;
+            let partial;
+
+            if (canResume) {
+                anchorEndTime = Math.floor(new Date(refEnd).getTime() / 1000);
+                daysCompleted = priorDaysCompleted;
+                // Keep prior days as plain objects so merge/save are independent of Mongoose subdocs.
+                partial = priorPartial.map(p => ({
+                    day: p.day,
+                    messageCount: (p.messageCount || []).map(m => ({
+                        sourceChain: m.sourceChain,
+                        destinationChain: m.destinationChain,
+                        messageCount: m.messageCount
+                    })),
+                    totalMessages: p.totalMessages,
+                    startHoursAgo: p.startHoursAgo,
+                    endHoursAgo: p.endHoursAgo,
+                    processedAt: p.processedAt
+                }));
+                logger.info(`[TELEPORTER WEEKLY] Resuming update: ${daysCompleted}/${WEEKLY_DAYS} days already collected, continuing from day ${daysCompleted + 1}`);
+            } else {
+                anchorEndTime = Math.floor(Date.now() / 1000);
+                daysCompleted = 0;
+                partial = [];
+                updateState.referenceEndTime = new Date(anchorEndTime * 1000);
+                updateState.partialResults = [];
+                updateState.progress.daysCompleted = 0;
+                updateState.progress.currentDay = 1;
+                updateState.progress.messagesCollected = 0;
+                await updateState.save();
+                logger.info(`[TELEPORTER WEEKLY] Starting fresh 7-day fetch (anchor ${new Date(anchorEndTime * 1000).toISOString()})`);
+            }
+
+            for (let day = daysCompleted + 1; day <= WEEKLY_DAYS; day++) {
+                // Stop immediately if another process took over the lock.
+                if (!(await ownershipCheck())) {
+                    throw new Error('Lost ownership of update lock');
+                }
+
+                const { startTime, endTime } = this.getWeeklyDayWindow(anchorEndTime, day);
+                logger.info(`[TELEPORTER WEEKLY] Fetching day ${day}/${WEEKLY_DAYS} (${new Date(startTime * 1000).toISOString()} → ${new Date(endTime * 1000).toISOString()})`);
+
+                const dayMessages = await this.fetchICMMessagesInWindow(startTime, endTime, 'weekly', ownershipCheck);
+                const dayProcessed = await this.processMessages(dayMessages);
+
+                partial.push({
+                    day,
+                    messageCount: dayProcessed,
+                    totalMessages: dayMessages.length,
+                    startHoursAgo: day * 24,
+                    endHoursAgo: (day - 1) * 24,
+                    processedAt: new Date()
+                });
+
+                // Checkpoint this day so a restart resumes from the next one.
+                updateState.partialResults = partial;
+                updateState.progress.daysCompleted = day;
+                updateState.progress.currentDay = day + 1;
+                updateState.progress.messagesCollected = partial.reduce((sum, p) => sum + (p.totalMessages || 0), 0);
+                updateState.lastUpdatedAt = new Date();
+                await updateState.save();
+
+                logger.info(`[TELEPORTER WEEKLY] ✅ Day ${day}/${WEEKLY_DAYS} complete: ${dayMessages.length} messages, ${dayProcessed.length} chain pairs (${partial.reduce((s, p) => s + (p.totalMessages || 0), 0)} messages so far)`);
+            }
+
+            // All days collected — merge into the final weekly aggregate.
+            const merged = this.mergePartialResults(partial);
+            logger.info(`[TELEPORTER WEEKLY] Merged ${WEEKLY_DAYS} days into ${merged.messageCounts.length} unique chain pairs (${merged.totalMessages} total messages)`);
 
             // Save to database (replace existing weekly data)
             await TeleporterMessage.deleteMany({ dataType: 'weekly' });
-            
+
             const teleporterData = new TeleporterMessage({
                 updatedAt: new Date(),
-                messageCounts: processedData,
-                totalMessages: messages.length,
+                messageCounts: merged.messageCounts,
+                totalMessages: merged.totalMessages,
                 timeWindow: 168,
                 dataType: 'weekly'
             });
             await teleporterData.save();
 
-            // Update state to completed
+            // Update state to completed and clear the resume checkpoint.
             updateState.state = 'completed';
+            updateState.partialResults = [];
+            updateState.referenceEndTime = null;
             updateState.lastUpdatedAt = new Date();
             await updateState.save();
 
-            logger.info(`[TELEPORTER WEEKLY] ✅ Successfully completed weekly update: ${messages.length} messages, ${processedData.length} chain pairs`);
+            logger.info(`[TELEPORTER WEEKLY] ✅ Successfully completed weekly update: ${merged.totalMessages} messages, ${merged.messageCounts.length} chain pairs`);
 
             return {
                 success: true,
-                messageCount: processedData.length,
-                totalMessages: messages.length
+                messageCount: merged.messageCounts.length,
+                totalMessages: merged.totalMessages
             };
 
         } catch (error) {
@@ -866,6 +1021,12 @@ class TeleporterService {
      * Start periodic updates
      */
     startPeriodicUpdates() {
+        if (this._periodicUpdatesStarted) {
+            logger.warn('startPeriodicUpdates() called more than once, ignoring');
+            return;
+        }
+        this._periodicUpdatesStarted = true;
+
         // Initial updates
         this.updateDailyData().catch(err => {
             logger.error('Initial daily update failed:', err);

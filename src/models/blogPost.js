@@ -111,6 +111,6 @@ const blogPostSchema = new mongoose.Schema(
 // Note: slug index is already created by unique: true in schema
 blogPostSchema.index({ publishedAt: -1 });
 blogPostSchema.index({ tags: 1 });
-blogPostSchema.index({ syncStatus: 1 });
+blogPostSchema.index({ syncStatus: 1, publishedAt: -1 });
 
 module.exports = mongoose.model("BlogPost", blogPostSchema);

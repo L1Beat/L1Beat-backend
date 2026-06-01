@@ -1,11 +1,12 @@
 const { param, query, validationResult } = require("express-validator");
+const logger = require("./logger");
 
 // Middleware to validate and sanitize request parameters
 const validate = (validations) => {
   return async (req, res, next) => {
     // Handle case where validations is undefined, null, or not an array
     if (!validations || !Array.isArray(validations)) {
-      console.warn("Warning: validations is not a valid array:", validations);
+      logger.warn("Validations is not a valid array:", { validations });
       return next(); // Skip validation if no valid validations provided
     }
 
@@ -30,7 +31,7 @@ const validate = (validations) => {
 
       next();
     } catch (error) {
-      console.error("Validation middleware error:", error);
+      logger.error("Validation middleware error:", { message: error.message, stack: error.stack });
       return res.status(500).json({
         success: false,
         error: "Internal validation error",

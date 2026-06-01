@@ -21,7 +21,7 @@ const config = {
         ? process.env.PROD_MONGODB_URI
         : process.env.LOCAL_MONGODB_URI || process.env.DEV_MONGODB_URI,
     options: {
-      // useNewUrlParser and useUnifiedTopology are deprecated since MongoDB Driver 4.0
+      maxPoolSize: 20,
     },
   },
 

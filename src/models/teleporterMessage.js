@@ -79,6 +79,14 @@ const teleporterUpdateStateSchema = new mongoose.Schema({
         required: true,
         default: Date.now
     },
+    // Anchor for resumable multi-day fetches: the fixed "end of window" the
+    // per-day windows are measured back from. Captured when a weekly run first
+    // starts so that resuming hours later still produces a consistent 7-day
+    // dataset (rather than a window that slides with wall-clock time).
+    referenceEndTime: {
+        type: Date,
+        default: null
+    },
     // Progress information
     progress: {
         currentDay: {
