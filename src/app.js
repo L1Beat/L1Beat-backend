@@ -34,7 +34,6 @@ const logger = require('./utils/logger');
 const blogRoutes = require('./routes/blogRoutes');
 const authorRoutes = require('./routes/authorRoutes');
 const authorService = require('./services/authorService');
-const snowpeerRoutes = require('./routes/snowpeerRoutes');
 const substackService = require('./services/substackService');
 
 // Process-level error handlers
@@ -655,7 +654,6 @@ app.use('/api', teleporterRoutes);
 app.use('/api', validatorRoutes);
 app.use('/api', blogRoutes);
 app.use('/api/authors', authorRoutes);
-app.use('/api/snowpeer', snowpeerRoutes);
 
 // Cache status endpoint (development only)
 if (isDevelopment) {
