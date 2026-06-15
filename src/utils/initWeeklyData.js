@@ -46,9 +46,9 @@ async function initWeeklyData() {
       }
     }
 
-    // Start the weekly data update using the new method that fetches all data at once
+    // Start the resumable weekly data update (fetches the 7 day-windows).
     console.log('Starting weekly teleporter data update...');
-    const result = await teleporterService.fetchWeeklyTeleporterDataAtOnce();
+    const result = await teleporterService.updateWeeklyData();
     
     console.log('Weekly data update completed:', {
       success: result.success,
