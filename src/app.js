@@ -173,13 +173,20 @@ app.get('/health/dependencies', async (req, res) => {
     if (!url) return { name, status: 'unconfigured' };
     const startedAt = Date.now();
     try {
-      await axios.get(url, {
+      const response = await axios.get(url, {
         timeout: 5000,
-        // Any HTTP response means the host is reachable; we only care about
-        // connectivity here, not the specific status code.
+        // Resolve on any status so we can classify it ourselves below rather
+        // than treating a 5xx as a thrown error.
         validateStatus: () => true
       });
-      return { name, status: 'reachable', latencyMs: Date.now() - startedAt };
+      const latencyMs = Date.now() - startedAt;
+      // A 5xx means the upstream is reachable but degraded/erroring — exactly the
+      // condition that breaks the cron metric updates — so report it as degraded.
+      // A <500 response (incl. a 404 on the API root) just means it's serving.
+      if (response.status >= 500) {
+        return { name, status: 'degraded', httpStatus: response.status, latencyMs };
+      }
+      return { name, status: 'reachable', httpStatus: response.status, latencyMs };
     } catch (error) {
       return { name, status: 'unreachable', error: error.message };
     }
@@ -251,21 +258,23 @@ const initializeDataUpdates = async () => {
             }
           }
 
-          // Fetch TPS and metrics if evmChainId is available
+          // Fetch metrics if evmChainId is available
           const chainIdForTps = dbChain.evmChainId;
           if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-            logger.debug(`[METRICS] Fetching metrics for ${dbChain.chainName} (evmChainId: ${chainIdForTps})`);
+            const id = String(chainIdForTps);
+            logger.debug(`[METRICS] Fetching metrics for ${dbChain.chainName} (evmChainId: ${id})`);
 
-            // Add initial TPS update
-            await tpsService.updateTpsData(String(chainIdForTps));
-            // Add initial Transaction Count update
-            await tpsService.updateCumulativeTxCount(String(chainIdForTps));
-            // Add initial Gas Used update
-            await gasUsedService.updateGasUsedData(String(chainIdForTps));
-            // Add initial Average Gas Price update
-            await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
-            // Add initial Fees Paid update
-            await feesPaidService.updateFeesPaidData(String(chainIdForTps));
+            // Independent fetches run concurrently. Daily txCount is included
+            // because TPS is derived from it (no separate TPS fetch).
+            await Promise.all([
+              tpsService.updateCumulativeTxCount(id),
+              txCountService.updateTxCountData(id),
+              gasUsedService.updateGasUsedData(id),
+              avgGasPriceService.updateAvgGasPriceData(id),
+              feesPaidService.updateFeesPaidData(id)
+            ]);
+            // Derive TPS from the daily txCount fetched just above.
+            await tpsService.updateTpsData(id);
 
             logger.info(`[INIT] Completed all metrics for ${dbChain.chainName}`);
           } else {
@@ -375,25 +384,37 @@ const initializeDataUpdates = async () => {
               }
             }
 
-            // Fetch TPS and metrics if evmChainId is available
+            // Update all metrics if evmChainId is available
             const chainIdForTps = dbChain.evmChainId;
             if (chainIdForTps && /^\d+$/.test(String(chainIdForTps))) {
-              // Add TPS update for each chain
-              await tpsService.updateTpsData(String(chainIdForTps));
-              // Add Max TPS update for each chain
-              await maxTpsService.updateMaxTpsData(String(chainIdForTps));
-              // Add Cumulative Transaction Count update for each chain
-              await tpsService.updateCumulativeTxCount(String(chainIdForTps));
-              // Add Daily Transaction Count update for each chain
-              await txCountService.updateTxCountData(String(chainIdForTps));
-              // Add Active Addresses update for each chain
-              await activeAddressesService.updateActiveAddressesData(String(chainIdForTps));
-              // Add Gas Used update for each chain
-              await gasUsedService.updateGasUsedData(String(chainIdForTps));
-              // Add Average Gas Price update for each chain
-              await avgGasPriceService.updateAvgGasPriceData(String(chainIdForTps));
-              // Add Fees Paid update for each chain
-              await feesPaidService.updateFeesPaidData(String(chainIdForTps));
+              const id = String(chainIdForTps);
+
+              // These metrics each fetch independently and own a separate rate
+              // limit budget, so run them concurrently rather than one-by-one.
+              const metricResults = await Promise.all([
+                maxTpsService.updateMaxTpsData(id),
+                tpsService.updateCumulativeTxCount(id),
+                txCountService.updateTxCountData(id),
+                activeAddressesService.updateActiveAddressesData(id),
+                gasUsedService.updateGasUsedData(id),
+                avgGasPriceService.updateAvgGasPriceData(id),
+                feesPaidService.updateFeesPaidData(id)
+              ]);
+
+              // TPS is derived from the daily txCount fetched just above, so it
+              // runs after txCountService has stored it (no extra API call).
+              const tpsResult = await tpsService.updateTpsData(id);
+
+              // Surface metric-level failures instead of always reporting
+              // success: the metric services return { success: false } (they do
+              // not throw) when every retry fails.
+              const failed = [...metricResults, tpsResult].filter(r => r && r.success === false);
+              if (failed.length > 0) {
+                logger.warn(`[CRON] ${dbChain.chainName}: ${failed.length} of 8 metric updates failed`, {
+                  errors: failed.map(r => r.error).filter(Boolean)
+                });
+                return { success: false, chain: dbChain.chainName, failedMetrics: failed.length };
+              }
             }
 
             logger.info(`[CRON] Successfully updated ${dbChain.chainName}`);
