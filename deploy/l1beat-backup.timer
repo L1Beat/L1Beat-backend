@@ -1,0 +1,13 @@
+# Daily at 04:30 server time, after the app's 00:00 and 03:00 jobs.
+# Enable: sudo systemctl enable --now l1beat-backup.timer
+[Unit]
+Description=Daily L1Beat MongoDB backup
+
+[Timer]
+OnCalendar=*-*-* 04:30
+RandomizedDelaySec=10m
+# Run on next boot if the server was off at 04:30.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

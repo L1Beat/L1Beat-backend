@@ -1,0 +1,15 @@
+# One-shot MongoDB backup; triggered daily by l1beat-backup.timer.
+# Install: sudo cp deploy/l1beat-backup.service deploy/l1beat-backup.timer /etc/systemd/system/
+[Unit]
+Description=L1Beat MongoDB backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=selim
+Group=selim
+ExecStart=/home/selim/l1beat-backend/deploy/backup-mongo.sh
+# Shares the box with the Icicle services: lowest CPU and IO priority.
+Nice=19
+IOSchedulingClass=idle
