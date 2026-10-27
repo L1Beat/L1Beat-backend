@@ -744,9 +744,11 @@ module.exports = app;
 // Only bind a port outside of tests (in tests supertest drives the app directly).
 const isTest = process.env.NODE_ENV === 'test';
 if (!isTest) {
-  const server = app.listen(PORT, () => {
+  // HOST defaults to 0.0.0.0; set HOST=127.0.0.1 when running behind a local reverse proxy.
+  const server = app.listen(PORT, config.server.host, () => {
     logger.info(`Server running on port ${PORT}`, {
       environment: config.env,
+      host: config.server.host,
       port: PORT,
       timestamp: new Date().toISOString()
     });
