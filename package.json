@@ -29,6 +29,7 @@
     "l1beat-l1-registry": "1.2.16",
     "mongoose": "^8.8.1",
     "node-cron": "^3.0.3",
+    "p-limit": "^3.1.0",
     "remark": "^15.0.1",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
