@@ -28,3 +28,12 @@ mv "$tmp" "$out"
 
 ls -1t "$DIR"/l1beat-*.gz | tail -n +"$((KEEP + 1))" | xargs -r rm --
 echo "wrote $out ($size bytes)"
+
+# Off-site copy to Cloudflare R2, when configured in /etc/l1beat-backup.env.
+# rclone reads the "r2" remote from RCLONE_CONFIG_R2_* variables. R2-side
+# retention is a bucket lifecycle rule, not handled here. The token is scoped
+# to the one bucket, so skip rclone's bucket-exists check (it needs more rights).
+if [ -n "${R2_BUCKET:-}" ]; then
+  rclone copyto "$out" "r2:$R2_BUCKET/$(basename "$out")" --s3-no-check-bucket
+  echo "uploaded to r2:$R2_BUCKET/$(basename "$out")"
+fi

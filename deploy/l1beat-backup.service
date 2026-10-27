@@ -9,6 +9,8 @@ Requires=docker.service
 Type=oneshot
 User=selim
 Group=selim
+# Optional R2 credentials (R2_BUCKET, RCLONE_CONFIG_R2_*), mode 600.
+EnvironmentFile=-/etc/l1beat-backup.env
 ExecStart=/home/selim/l1beat-backend/deploy/backup-mongo.sh
 # Shares the box with the Icicle services: lowest CPU and IO priority.
 Nice=19
