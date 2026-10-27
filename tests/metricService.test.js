@@ -117,4 +117,28 @@ describe('createMetricService updateData failure handling', () => {
     expect(result.chainId).toBe('123');
     expect(result.error).toMatch(/no valid response/i);
   });
+
+  it('does not write a zero series when the metrics API returns 404', async () => {
+    axios.get.mockRejectedValue({
+      message: 'Request failed with status code 404',
+      response: { status: 404 }
+    });
+    const bulkWrite = jest.fn();
+
+    const svc = createMetricService({
+      model: { bulkWrite },
+      metricPath: 'txCount',
+      label: 'TxCount'
+    });
+    const result = await svc.updateData('7979', 3);
+
+    expect(result).toMatchObject({
+      success: true,
+      notFound: true,
+      chainId: '7979',
+      recordsProcessed: 0
+    });
+    expect(bulkWrite).not.toHaveBeenCalled();
+    expect(axios.get).toHaveBeenCalledTimes(1);
+  });
 });

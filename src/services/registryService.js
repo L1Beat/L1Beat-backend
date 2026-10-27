@@ -149,6 +149,64 @@ class RegistryService {
     return this.chains.length;
   }
 
+  /**
+   * A chain is the registry folder, not the subnet id. Subnet, blockchain, and
+   * evm chain id all change when an L1 is redeployed (FRQTAL moved folders in
+   * place). Match that folder and replace the old row instead of inserting a
+   * second one keyed by the new subnet id.
+   */
+  async resolveSyncTarget(Chain, chainData) {
+    const folderName = chainData.registryMetadata && chainData.registryMetadata.folderName;
+    const folderDocs = folderName
+      ? await Chain.find({
+          'registryMetadata.folderName': folderName,
+          'registryMetadata.source': 'l1-registry'
+        })
+      : [];
+
+    const bySubnet = await Chain.findOne({ subnetId: chainData.subnetId });
+    const registryCount = folderName
+      ? this.chains.filter(chain => chain.registryMetadata
+          && chain.registryMetadata.folderName === folderName).length
+      : 0;
+
+    const sameName = folderDocs.filter(doc => doc.chainName === chainData.chainName);
+    let candidates = [];
+    if (sameName.length > 0) {
+      candidates = sameName;
+    } else if (folderDocs.length === 1 && registryCount === 1) {
+      candidates = folderDocs;
+    }
+
+    if (bySubnet && !candidates.some(doc => String(doc._id) === String(bySubnet._id))) {
+      if (candidates.length === 0) candidates = [bySubnet];
+    }
+
+    if (candidates.length === 0) {
+      return { target: null, duplicateIds: [] };
+    }
+
+    // Keep the row that already has validators, otherwise the pre-move row,
+    // so a duplicate insert from an earlier subnet-id upsert does not win.
+    const target = candidates.find(doc => Array.isArray(doc.validators) && doc.validators.length > 0)
+      || candidates.find(doc => doc.subnetId !== chainData.subnetId)
+      || candidates[0];
+
+    const duplicateIds = [];
+    const seen = new Set();
+    const pushDuplicate = (doc) => {
+      if (!doc || String(doc._id) === String(target._id)) return;
+      const id = String(doc._id);
+      if (seen.has(id)) return;
+      seen.add(id);
+      duplicateIds.push(doc._id);
+    };
+    candidates.forEach(pushDuplicate);
+    pushDuplicate(bySubnet);
+
+    return { target, duplicateIds };
+  }
+
   async syncToDatabase(Chain) {
     try {
       logger.info('Syncing registry data to database...');
@@ -157,12 +215,28 @@ class RegistryService {
       let errorCount = 0;
       let mergedCount = 0;
       let newCount = 0;
+      let replacedCount = 0;
 
       for (const chainData of this.chains) {
         try {
-          // Upsert chain by subnetId (our unique identifier)
+          const { target, duplicateIds } = await this.resolveSyncTarget(Chain, chainData);
+          if (duplicateIds.length > 0) {
+            await Chain.deleteMany({ _id: { $in: duplicateIds } });
+            logger.info(`Removed ${duplicateIds.length} stale subnet row(s) for ${chainData.chainName}`, {
+              folderName: chainData.registryMetadata && chainData.registryMetadata.folderName
+            });
+          }
+          if (target && target.subnetId !== chainData.subnetId) {
+            replacedCount++;
+            logger.info(`Replacing moved chain ${chainData.chainName}`, {
+              fromSubnet: target.subnetId,
+              toSubnet: chainData.subnetId,
+              evmChainId: chainData.evmChainId
+            });
+          }
+
           await Chain.findOneAndUpdate(
-            { subnetId: chainData.subnetId },
+            target ? { _id: target._id } : { subnetId: chainData.subnetId },
             {
               $set: {
                 subnetId: chainData.subnetId,
@@ -215,8 +289,8 @@ class RegistryService {
         }
       }
 
-      logger.info(`Registry sync complete: ${syncedCount} chains synced (${newCount} upserted), ${errorCount} errors`);
-      return { syncedCount, mergedCount, newCount, errorCount };
+      logger.info(`Registry sync complete: ${syncedCount} chains synced (${newCount} upserted, ${replacedCount} moved), ${errorCount} errors`);
+      return { syncedCount, mergedCount, newCount, replacedCount, errorCount };
     } catch (error) {
       logger.error('Error syncing registry to database:', error);
       throw error;

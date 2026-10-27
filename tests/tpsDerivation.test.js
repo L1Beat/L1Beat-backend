@@ -12,8 +12,8 @@
  * tpsService — here we exercise the real implementation against mocked models.
  */
 
-jest.mock('../src/models/tps', () => ({ bulkWrite: jest.fn() }));
-jest.mock('../src/models/txCount', () => ({ find: jest.fn() }));
+jest.mock('../src/models/tps', () => ({ bulkWrite: jest.fn(), deleteMany: jest.fn() }));
+jest.mock('../src/models/txCount', () => ({ find: jest.fn(), deleteMany: jest.fn() }));
 jest.mock('../src/models/cumulativeTxCount', () => ({}));
 jest.mock('../src/models/chain', () => ({ find: jest.fn() }));
 // cumulativeTxCount delegates to the shared factory; stub it so requiring
@@ -100,6 +100,23 @@ describe('tpsService.updateTpsData derivation', () => {
     const result = await tpsService.updateTpsData('42');
 
     expect(result).toMatchObject({ success: true, recordsProcessed: 0 });
+    expect(TPS.bulkWrite).not.toHaveBeenCalled();
+  });
+
+  it('drops a stale TPS series when the metrics API has no txCount for the chain', async () => {
+    TPS.deleteMany.mockResolvedValue({ deletedCount: 1 });
+    TxCount.deleteMany.mockResolvedValue({ deletedCount: 1 });
+
+    const result = await tpsService.syncDerivedTps('7979', {
+      success: true,
+      notFound: true,
+      chainId: '7979',
+      recordsProcessed: 0
+    });
+
+    expect(result).toMatchObject({ success: true, notFound: true, recordsProcessed: 0 });
+    expect(TPS.deleteMany).toHaveBeenCalledWith({ chainId: '7979' });
+    expect(TxCount.deleteMany).toHaveBeenCalledWith({ chainId: '7979' });
     expect(TPS.bulkWrite).not.toHaveBeenCalled();
   });
 

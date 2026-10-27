@@ -265,16 +265,17 @@ const initializeDataUpdates = async () => {
             logger.debug(`[METRICS] Fetching metrics for ${dbChain.chainName} (evmChainId: ${id})`);
 
             // Independent fetches run concurrently. Daily txCount is included
-            // because TPS is derived from it (no separate TPS fetch).
+            // because TPS is derived from it (no separate TPS fetch). A 404
+            // drops any stale TPS series instead of writing 0.00.
+            const txCountUpdate = txCountService.updateTxCountData(id);
             await Promise.all([
               tpsService.updateCumulativeTxCount(id),
-              txCountService.updateTxCountData(id),
+              txCountUpdate,
               gasUsedService.updateGasUsedData(id),
               avgGasPriceService.updateAvgGasPriceData(id),
               feesPaidService.updateFeesPaidData(id)
             ]);
-            // Derive TPS from the daily txCount fetched just above.
-            await tpsService.updateTpsData(id);
+            await tpsService.syncDerivedTps(id, await txCountUpdate);
 
             logger.info(`[INIT] Completed all metrics for ${dbChain.chainName}`);
           } else {
@@ -391,10 +392,11 @@ const initializeDataUpdates = async () => {
 
               // These metrics each fetch independently and own a separate rate
               // limit budget, so run them concurrently rather than one-by-one.
+              const txCountUpdate = txCountService.updateTxCountData(id);
               const metricResults = await Promise.all([
                 maxTpsService.updateMaxTpsData(id),
                 tpsService.updateCumulativeTxCount(id),
-                txCountService.updateTxCountData(id),
+                txCountUpdate,
                 activeAddressesService.updateActiveAddressesData(id),
                 gasUsedService.updateGasUsedData(id),
                 avgGasPriceService.updateAvgGasPriceData(id),
@@ -403,7 +405,8 @@ const initializeDataUpdates = async () => {
 
               // TPS is derived from the daily txCount fetched just above, so it
               // runs after txCountService has stored it (no extra API call).
-              const tpsResult = await tpsService.updateTpsData(id);
+              // A 404 removes a stale 0.00 series instead of rewriting it.
+              const tpsResult = await tpsService.syncDerivedTps(id, await txCountUpdate);
 
               // Surface metric-level failures instead of always reporting
               // success: the metric services return { success: false } (they do

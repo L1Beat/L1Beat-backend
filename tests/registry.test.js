@@ -244,6 +244,26 @@ describe('Registry Service', () => {
   });
 
   describe('Registry Data Structure', () => {
+    it('includes Tomatochain at evm chain id 77294', async () => {
+      const chains = await registryService.loadAllChains();
+      const tomato = chains.find(c => c.evmChainId === 77294);
+
+      expect(tomato).toBeDefined();
+      expect(tomato.chainName).toBe('Tomatochain');
+      expect(tomato.registryMetadata.folderName).toBe('tomatochain');
+    }, 10000);
+
+    it('parses the moved FRQTAL subnet at evm chain id 62786', async () => {
+      const chains = await registryService.loadAllChains();
+      const frqtal = chains.find(c => c.registryMetadata.folderName === 'frqtal');
+
+      expect(frqtal).toBeDefined();
+      expect(frqtal.chainName).toBe('FRQTAL');
+      expect(frqtal.evmChainId).toBe(62786);
+      expect(frqtal.subnetId.startsWith('2E2AhbGH')).toBe(true);
+      expect(frqtal.blockchainId.startsWith('2FJM6Wqy')).toBe(true);
+    }, 10000);
+
     it('should parse evmChainId correctly', async () => {
       const chains = await registryService.loadAllChains();
 
