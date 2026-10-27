@@ -113,6 +113,37 @@ class TpsService {
     }
   }
 
+  /**
+   * Derive TPS after a txCount refresh. A 404 from the metrics API means this
+   * chain has no series: delete any TPS and txCount rows already stored (a
+   * stale 0.00 left after the API dropped the chain) instead of deriving them
+   * again.
+   * @param {string} chainId
+   * @param {{ notFound?: boolean }} txCountResult - Result from txCountService.updateTxCountData
+   */
+  async syncDerivedTps(chainId, txCountResult) {
+    if (txCountResult && txCountResult.notFound) {
+      const id = String(chainId);
+      const [tpsResult, txResult] = await Promise.all([
+        TPS.deleteMany({ chainId: id }),
+        TxCount.deleteMany({ chainId: id })
+      ]);
+      logger.info(`[TPS Update] Metrics API returned 404 for chain ${id}; removed stale TPS and txCount rows`, {
+        tpsDeleted: tpsResult.deletedCount || 0,
+        txCountDeleted: txResult.deletedCount || 0
+      });
+      return {
+        success: true,
+        notFound: true,
+        chainId: id,
+        recordsProcessed: 0,
+        message: 'No txCount series on the metrics API'
+      };
+    }
+
+    return this.updateTpsData(chainId);
+  }
+
   async getTpsHistory(chainId, days = 30) {
     try {
       const existingData = await TPS.countDocuments({ chainId });

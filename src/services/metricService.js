@@ -175,6 +175,21 @@ function createMetricService({ model, metricPath, label, aggregation = 'sum' }) 
           };
 
         } catch (error) {
+          const status = error.response && error.response.status;
+          // A 404 means the metrics API does not list this chain. Retrying will
+          // not change that, and writing a 0 would show up on the screener as a
+          // real TPS of <0.01. Leave the series absent.
+          if (status === 404) {
+            logger.info(`[${label} Update] Chain ${chainId} is not listed by the metrics API (404). Not writing a zero series.`);
+            return {
+              success: true,
+              notFound: true,
+              chainId,
+              recordsProcessed: 0,
+              message: 'Metrics API returned 404'
+            };
+          }
+
           logger.error(`[${label} Update] Error for chain ${chainId} (Attempt ${attempt}/${retryCount}):`, error.message);
 
           if (attempt === retryCount) {
