@@ -33,7 +33,9 @@ echo "wrote $out ($size bytes)"
 # rclone reads the "r2" remote from RCLONE_CONFIG_R2_* variables. R2-side
 # retention is a bucket lifecycle rule, not handled here. The token is scoped
 # to the one bucket, so skip rclone's bucket-exists check (it needs more rights).
+# --s3-no-head: rclone 1.60 re-checks the upload with HEAD ?versionId=, which
+# R2 rejects (501). The PUT already carries Content-MD5, which R2 verifies.
 if [ -n "${R2_BUCKET:-}" ]; then
-  rclone copyto "$out" "r2:$R2_BUCKET/$(basename "$out")" --s3-no-check-bucket
+  rclone copyto "$out" "r2:$R2_BUCKET/$(basename "$out")" --s3-no-check-bucket --s3-no-head
   echo "uploaded to r2:$R2_BUCKET/$(basename "$out")"
 fi
