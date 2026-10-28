@@ -82,7 +82,7 @@ router.get('/tps/all/latest', async (req, res) => {
         subnetId: chain.subnetId,
         chainName: chain.chainName,
         tps: tps ? {
-          value: parseFloat(tps.value).toFixed(2),
+          value: Number(tps.value),
           timestamp: tps.timestamp
         } : null
       };
