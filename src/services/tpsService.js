@@ -1,6 +1,7 @@
 const TPS = require('../models/tps');
 const CumulativeTxCount = require('../models/cumulativeTxCount');
 const TxCount = require('../models/txCount');
+const RpcTxCountState = require('../models/rpcTxCountState');
 const Chain = require('../models/chain');
 const config = require('../config/config');
 const logger = require('../utils/logger');
@@ -123,20 +124,30 @@ class TpsService {
   }
 
   /**
-   * Derive TPS after a txCount refresh. A 404 from the metrics API means this
-   * chain has no series: delete any TPS and txCount rows already stored (a
-   * stale 0.00 left after the API dropped the chain) instead of deriving them
-   * again.
+   * Derive TPS after a txCount refresh. A 404 from the metrics API means it
+   * has no series for this chain: delete any txCount rows it stored before (a
+   * stale 0.00 left after the API dropped the chain) and hand the chain to
+   * rpcTxCountService, which counts txCount from the chain's own RPC. TPS is
+   * kept only while RPC-counted rows exist.
    * @param {string} chainId
-   * @param {{ notFound?: boolean }} txCountResult - Result from txCountService.updateTxCountData
+   * @param {{ success?: boolean, notFound?: boolean, recordsProcessed?: number }} txCountResult -
+   *   Result from txCountService.updateTxCountData
    */
   async syncDerivedTps(chainId, txCountResult) {
+    const id = String(chainId);
+
     if (txCountResult && txCountResult.notFound) {
-      const id = String(chainId);
-      const [tpsResult, txResult] = await Promise.all([
-        TPS.deleteMany({ chainId: id }),
-        TxCount.deleteMany({ chainId: id })
+      const [txResult] = await Promise.all([
+        TxCount.deleteMany({ chainId: id, source: { $ne: 'rpc' } }),
+        RpcTxCountState.updateOne({ chainId: id }, { $setOnInsert: { chainId: id } }, { upsert: true })
       ]);
+
+      if (await TxCount.countDocuments({ chainId: id }) > 0) {
+        const result = await this.updateTpsData(id);
+        return { ...result, notFound: true, source: 'rpc' };
+      }
+
+      const tpsResult = await TPS.deleteMany({ chainId: id });
       logger.info(`[TPS Update] Metrics API returned 404 for chain ${id}; removed stale TPS and txCount rows`, {
         tpsDeleted: tpsResult.deletedCount || 0,
         txCountDeleted: txResult.deletedCount || 0
@@ -148,6 +159,15 @@ class TpsService {
         recordsProcessed: 0,
         message: 'No txCount series on the metrics API'
       };
+    }
+
+    // The metrics API covers this chain again: stop counting it from RPC. Its
+    // rows now overwrite the RPC-counted days, so drop their 'rpc' label.
+    if (txCountResult && txCountResult.success && txCountResult.recordsProcessed > 0) {
+      const removed = await RpcTxCountState.deleteOne({ chainId: id });
+      if (removed.deletedCount > 0) {
+        await TxCount.updateMany({ chainId: id, source: 'rpc' }, { $unset: { source: 1 } });
+      }
     }
 
     return this.updateTpsData(chainId);

@@ -13,7 +13,13 @@
  */
 
 jest.mock('../src/models/tps', () => ({ bulkWrite: jest.fn(), deleteMany: jest.fn() }));
-jest.mock('../src/models/txCount', () => ({ find: jest.fn(), deleteMany: jest.fn() }));
+jest.mock('../src/models/txCount', () => ({
+  find: jest.fn(),
+  deleteMany: jest.fn(),
+  countDocuments: jest.fn(),
+  updateMany: jest.fn()
+}));
+jest.mock('../src/models/rpcTxCountState', () => ({ updateOne: jest.fn(), deleteOne: jest.fn() }));
 jest.mock('../src/models/cumulativeTxCount', () => ({}));
 jest.mock('../src/models/chain', () => ({ find: jest.fn() }));
 // cumulativeTxCount delegates to the shared factory; stub it so requiring
@@ -29,6 +35,7 @@ jest.mock('../src/services/metricService', () => () => ({
 
 const TPS = require('../src/models/tps');
 const TxCount = require('../src/models/txCount');
+const RpcTxCountState = require('../src/models/rpcTxCountState');
 const tpsService = require('../src/services/tpsService');
 
 const NOW_SECONDS = 1_700_000_000;
@@ -133,6 +140,7 @@ describe('tpsService.updateTpsData derivation', () => {
   it('drops a stale TPS series when the metrics API has no txCount for the chain', async () => {
     TPS.deleteMany.mockResolvedValue({ deletedCount: 1 });
     TxCount.deleteMany.mockResolvedValue({ deletedCount: 1 });
+    TxCount.countDocuments.mockResolvedValue(0);
 
     const result = await tpsService.syncDerivedTps('7979', {
       success: true,
@@ -142,9 +150,39 @@ describe('tpsService.updateTpsData derivation', () => {
     });
 
     expect(result).toMatchObject({ success: true, notFound: true, recordsProcessed: 0 });
+    expect(TxCount.deleteMany).toHaveBeenCalledWith({ chainId: '7979', source: { $ne: 'rpc' } });
     expect(TPS.deleteMany).toHaveBeenCalledWith({ chainId: '7979' });
-    expect(TxCount.deleteMany).toHaveBeenCalledWith({ chainId: '7979' });
+    // Hands the chain to rpcTxCountService.
+    expect(RpcTxCountState.updateOne).toHaveBeenCalledWith(
+      { chainId: '7979' }, { $setOnInsert: { chainId: '7979' } }, { upsert: true }
+    );
     expect(TPS.bulkWrite).not.toHaveBeenCalled();
+  });
+
+  it('keeps RPC-counted txCount on a 404 and derives TPS from it', async () => {
+    TxCount.deleteMany.mockResolvedValue({ deletedCount: 0 });
+    TxCount.countDocuments.mockResolvedValue(30);
+    const getWritten = captureBulkWrite();
+    stubTxCountRows([{ timestamp: NOW_SECONDS - 2 * DAY, value: 86400 }]);
+
+    const result = await tpsService.syncDerivedTps('2366', { success: true, notFound: true });
+
+    expect(result).toMatchObject({ success: true, notFound: true, source: 'rpc' });
+    expect(TPS.deleteMany).not.toHaveBeenCalled();
+    expect(getWritten()).toEqual([{ timestamp: NOW_SECONDS - 2 * DAY, value: 1 }]);
+  });
+
+  it('stops RPC counting once the metrics API covers the chain again', async () => {
+    RpcTxCountState.deleteOne.mockResolvedValue({ deletedCount: 1 });
+    captureBulkWrite();
+    stubTxCountRows([{ timestamp: NOW_SECONDS - 2 * DAY, value: 1 }]);
+
+    await tpsService.syncDerivedTps('2366', { success: true, recordsProcessed: 30 });
+
+    expect(RpcTxCountState.deleteOne).toHaveBeenCalledWith({ chainId: '2366' });
+    expect(TxCount.updateMany).toHaveBeenCalledWith(
+      { chainId: '2366', source: 'rpc' }, { $unset: { source: 1 } }
+    );
   });
 
   it('returns a failure result (not a throw) when the write fails', async () => {

@@ -14,6 +14,7 @@ const Chain = require('./models/chain');
 const chainService = require('./services/chainService');
 const tpsRoutes = require('./routes/tpsRoutes');
 const tpsService = require('./services/tpsService');
+const rpcTxCountService = require('./services/rpcTxCountService');
 const TPS = require('./models/tps');
 const activeAddressesRoutes = require('./routes/activeAddressesRoutes');
 const activeAddressesService = require('./services/activeAddressesService');
@@ -465,6 +466,16 @@ const initializeDataUpdates = async () => {
       logger.info('[CRON BLOG] Blog sync completed:', result);
     } catch (error) {
       logger.error('[CRON BLOG] Blog sync failed:', error);
+    }
+  });
+
+  // Daily txCount from chain RPCs for chains the metrics API doesn't cover.
+  // At :15 so it runs after the hourly metrics update has flagged those chains.
+  cron.schedule('15 * * * *', async () => {
+    try {
+      await rpcTxCountService.updateAllChains();
+    } catch (error) {
+      logger.error('[CRON RPC TxCount] Run failed:', error);
     }
   });
 
