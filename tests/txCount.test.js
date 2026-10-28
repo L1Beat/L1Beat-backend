@@ -49,9 +49,8 @@ describe('Transaction Count Endpoints', () => {
 
   describe('GET /api/chains/:chainId/metrics/history', () => {
     it('returns one array per requested metric, matching the per-metric routes', async () => {
-      const chains = await get('/api/tx-count/all/latest');
-      const chain = chains.body.data.find(c => c.txCount) || chains.body.data[0];
-      const id = chain.evmChainId;
+      // A fixed ID, so this also runs against an empty test database.
+      const id = 43114;
 
       const response = await get(`/api/chains/${id}/metrics/history?days=7&metrics=txCount,gasUsed`);
       expect(response.status).toBe(200);
