@@ -14,7 +14,7 @@ const txCountSchema = new mongoose.Schema({
     required: true
   },
   // Unset for rows from the metrics API; 'rpc' for rows counted from the
-  // chain's own RPC (rpcTxCountService) when the metrics API lacks the chain.
+  // chain's own RPC (rpcMetricsService) when the metrics API lacks the chain.
   source: String,
   lastUpdated: {
     type: Date,

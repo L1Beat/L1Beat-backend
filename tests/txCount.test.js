@@ -31,4 +31,17 @@ describe('Transaction Count Endpoints', () => {
       }
     });
   });
+
+  describe('GET /api/tx-count/network/history', () => {
+    it('returns how many chains each day adds up', async () => {
+      const response = await get('/api/tx-count/network/history?days=7');
+
+      expect(response.status).toBe(200);
+      for (const row of response.body.data) {
+        expect(typeof row.value).toBe('number');
+        expect(Number.isInteger(row.chainCount)).toBe(true);
+        expect(row.chainCount).toBeGreaterThan(0);
+      }
+    });
+  });
 });

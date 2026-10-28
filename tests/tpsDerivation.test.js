@@ -20,6 +20,10 @@ jest.mock('../src/models/txCount', () => ({
   updateMany: jest.fn()
 }));
 jest.mock('../src/models/rpcTxCountState', () => ({ updateOne: jest.fn(), deleteOne: jest.fn() }));
+jest.mock('../src/models/gasUsed', () => ({ updateMany: jest.fn() }));
+jest.mock('../src/models/maxTps', () => ({ updateMany: jest.fn() }));
+jest.mock('../src/models/feesPaid', () => ({ updateMany: jest.fn() }));
+jest.mock('../src/models/avgGasPrice', () => ({ updateMany: jest.fn() }));
 jest.mock('../src/models/cumulativeTxCount', () => ({}));
 jest.mock('../src/models/chain', () => ({ find: jest.fn() }));
 // cumulativeTxCount delegates to the shared factory; stub it so requiring
@@ -180,9 +184,11 @@ describe('tpsService.updateTpsData derivation', () => {
     await tpsService.syncDerivedTps('2366', { success: true, recordsProcessed: 30 });
 
     expect(RpcTxCountState.deleteOne).toHaveBeenCalledWith({ chainId: '2366' });
-    expect(TxCount.updateMany).toHaveBeenCalledWith(
-      { chainId: '2366', source: 'rpc' }, { $unset: { source: 1 } }
-    );
+    for (const model of [TxCount, require('../src/models/feesPaid')]) {
+      expect(model.updateMany).toHaveBeenCalledWith(
+        { chainId: '2366', source: 'rpc' }, { $unset: { source: 1 } }
+      );
+    }
   });
 
   it('returns a failure result (not a throw) when the write fails', async () => {

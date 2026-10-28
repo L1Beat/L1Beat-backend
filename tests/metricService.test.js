@@ -55,8 +55,8 @@ describe('createMetricService aggregation', () => {
     it('sums values across chains per timestamp in network history', async () => {
       const history = await svc.getNetworkHistory(30);
       expect(history).toEqual([
-        { timestamp: 100, value: 30 },
-        { timestamp: 200, value: 30 }
+        { timestamp: 100, value: 30, chainCount: 2 },
+        { timestamp: 200, value: 30, chainCount: 1 }
       ]);
     });
 
@@ -75,8 +75,8 @@ describe('createMetricService aggregation', () => {
     it('averages values across chains per timestamp in network history', async () => {
       const history = await svc.getNetworkHistory(30);
       expect(history).toEqual([
-        { timestamp: 100, value: 15 }, // (10 + 20) / 2
-        { timestamp: 200, value: 30 }  // 30 / 1
+        { timestamp: 100, value: 15, chainCount: 2 }, // (10 + 20) / 2
+        { timestamp: 200, value: 30, chainCount: 1 }  // 30 / 1
       ]);
     });
 

@@ -1,6 +1,10 @@
 const TPS = require('../models/tps');
 const CumulativeTxCount = require('../models/cumulativeTxCount');
 const TxCount = require('../models/txCount');
+const GasUsed = require('../models/gasUsed');
+const MaxTps = require('../models/maxTps');
+const FeesPaid = require('../models/feesPaid');
+const AvgGasPrice = require('../models/avgGasPrice');
 const RpcTxCountState = require('../models/rpcTxCountState');
 const Chain = require('../models/chain');
 const config = require('../config/config');
@@ -127,7 +131,7 @@ class TpsService {
    * Derive TPS after a txCount refresh. A 404 from the metrics API means it
    * has no series for this chain: delete any txCount rows it stored before (a
    * stale 0.00 left after the API dropped the chain) and hand the chain to
-   * rpcTxCountService, which counts txCount from the chain's own RPC. TPS is
+   * rpcMetricsService, which counts txCount from the chain's own RPC. TPS is
    * kept only while RPC-counted rows exist.
    * @param {string} chainId
    * @param {{ success?: boolean, notFound?: boolean, recordsProcessed?: number }} txCountResult -
@@ -166,7 +170,9 @@ class TpsService {
     if (txCountResult && txCountResult.success && txCountResult.recordsProcessed > 0) {
       const removed = await RpcTxCountState.deleteOne({ chainId: id });
       if (removed.deletedCount > 0) {
-        await TxCount.updateMany({ chainId: id, source: 'rpc' }, { $unset: { source: 1 } });
+        await Promise.all([TxCount, GasUsed, MaxTps, FeesPaid, AvgGasPrice].map(model =>
+          model.updateMany({ chainId: id, source: 'rpc' }, { $unset: { source: 1 } })
+        ));
       }
     }
 

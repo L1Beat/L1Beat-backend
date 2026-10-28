@@ -13,6 +13,8 @@ const gasUsedSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  // 'rpc' for rows counted from the chain's own RPC (rpcMetricsService).
+  source: String,
   lastUpdated: {
     type: Date,
     default: Date.now
