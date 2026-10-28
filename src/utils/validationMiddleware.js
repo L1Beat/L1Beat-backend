@@ -71,6 +71,9 @@ const validators = {
 
   getLatestTps: [validationRules.chainId],
 
+  // Combined metrics route
+  getMetricsHistory: [validationRules.chainId, validationRules.days],
+
   // Teleporter routes
   getDailyCrossChainMessageCount: [],
 

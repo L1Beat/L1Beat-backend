@@ -32,6 +32,49 @@ describe('Transaction Count Endpoints', () => {
     });
   });
 
+  describe('GET /api/active-addresses/all/latest', () => {
+    it('returns the latest complete day for every chain', async () => {
+      const response = await get('/api/active-addresses/all/latest');
+
+      expect(response.status).toBe(200);
+      expect(response.body.count).toBe(response.body.data.length);
+      for (const item of response.body.data) {
+        expect(item).toHaveProperty('evmChainId');
+        expect(item).toHaveProperty('activeAddresses');
+        if (item.activeAddresses === null) continue;
+        expect(typeof item.activeAddresses.value).toBe('number');
+      }
+    });
+  });
+
+  describe('GET /api/chains/:chainId/metrics/history', () => {
+    it('returns one array per requested metric, matching the per-metric routes', async () => {
+      const chains = await get('/api/tx-count/all/latest');
+      const chain = chains.body.data.find(c => c.txCount) || chains.body.data[0];
+      const id = chain.evmChainId;
+
+      const response = await get(`/api/chains/${id}/metrics/history?days=7&metrics=txCount,gasUsed`);
+      expect(response.status).toBe(200);
+      expect(Object.keys(response.body.data).sort()).toEqual(['gasUsed', 'txCount']);
+
+      const single = await get(`/api/chains/${id}/tx-count/history?days=7`);
+      expect(response.body.data.txCount).toEqual(single.body.data);
+    });
+
+    it('returns all metrics when none are named', async () => {
+      const response = await get('/api/chains/43114/metrics/history?days=3');
+      expect(response.status).toBe(200);
+      expect(Object.keys(response.body.data).sort()).toEqual(
+        ['activeAddresses', 'avgGasPrice', 'feesPaid', 'gasUsed', 'maxTps', 'txCount']
+      );
+    });
+
+    it('rejects unknown metrics and bad days', async () => {
+      expect((await get('/api/chains/43114/metrics/history?metrics=txCount,nope')).status).toBe(400);
+      expect((await get('/api/chains/43114/metrics/history?days=0')).status).toBe(400);
+    });
+  });
+
   describe('GET /api/tx-count/network/history', () => {
     it('returns how many chains each day adds up', async () => {
       const response = await get('/api/tx-count/network/history?days=7');
