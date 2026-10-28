@@ -94,6 +94,33 @@ describe('tpsService.updateTpsData derivation', () => {
     expect(written).toEqual([{ timestamp: NOW_SECONDS - 2 * DAY, value: 0.5 }]);
   });
 
+  it('stores quiet-chain TPS unrounded instead of as 0', async () => {
+    const getWritten = captureBulkWrite();
+    // 12 tx in a full day is 0.000138… TPS; 2-decimal rounding would store 0.
+    stubTxCountRows([{ timestamp: NOW_SECONDS - 2 * DAY, value: 12 }]);
+
+    await tpsService.updateTpsData('7272');
+
+    expect(getWritten()).toEqual([{ timestamp: NOW_SECONDS - 2 * DAY, value: 12 / DAY }]);
+  });
+
+  it('limits the query to 30 days by default and drops the bound for a backfill', async () => {
+    captureBulkWrite();
+    stubTxCountRows([{ timestamp: NOW_SECONDS - 2 * DAY, value: 1 }]);
+
+    await tpsService.updateTpsData('42');
+    expect(TxCount.find).toHaveBeenLastCalledWith({
+      chainId: '42',
+      timestamp: { $gte: NOW_SECONDS - 30 * DAY, $lte: NOW_SECONDS }
+    });
+
+    await tpsService.updateTpsData('42', { days: null });
+    expect(TxCount.find).toHaveBeenLastCalledWith({
+      chainId: '42',
+      timestamp: { $lte: NOW_SECONDS }
+    });
+  });
+
   it('returns a no-op success result when there is no txCount data', async () => {
     stubTxCountRows([]);
 

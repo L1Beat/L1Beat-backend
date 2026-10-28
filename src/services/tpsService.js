@@ -36,17 +36,26 @@ class TpsService {
    * txCountSoFar / secondsElapsedSoFar, but only once MIN_ELAPSED_SECONDS have
    * passed so the value isn't divided by a tiny (or zero) denominator.
    *
+   * The value is stored unrounded: a quiet chain (a few tx/day) has a TPS
+   * far below 0.01, and rounding here would store it as 0 and drop it from
+   * the network total. Callers round for display.
+   *
    * @param {string} chainId - The chain ID
+   * @param {{ days?: number|null }} [options] - How many past days to derive
+   *   (default 30); null derives every stored txCount bucket (backfill).
    * @returns {Promise<Object>} - Result with { success, chainId, recordsProcessed }
    */
-  async updateTpsData(chainId) {
+  async updateTpsData(chainId, { days = 30 } = {}) {
     try {
       const currentTime = Math.floor(Date.now() / 1000);
-      const thirtyDaysAgo = currentTime - (30 * 24 * 60 * 60);
+      const timestamp = { $lte: currentTime };
+      if (days !== null) {
+        timestamp.$gte = currentTime - (days * FULL_DAY_SECONDS);
+      }
 
       const txCountRecords = await TxCount.find({
         chainId: String(chainId),
-        timestamp: { $gte: thirtyDaysAgo, $lte: currentTime }
+        timestamp
       })
         .select('timestamp value')
         .lean();
@@ -76,7 +85,7 @@ class TpsService {
         }
 
         const denominator = Math.max(elapsedSeconds, MIN_ELAPSED_SECONDS);
-        const tps = parseFloat((value / denominator).toFixed(2));
+        const tps = value / denominator;
         ops.push({
           updateOne: {
             filter: { chainId: String(chainId), timestamp },
