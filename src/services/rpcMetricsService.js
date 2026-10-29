@@ -25,8 +25,10 @@ const logger = require('../utils/logger');
 // public subnets.avax.network RPCs). Base fee * gas is not used: tips are a
 // large share of fees on these chains.
 //
-// Each run walks only the blocks after the last one counted (kept in
-// RpcTxCountState) and writes a UTC day once all of its blocks are counted.
+// Newest days first: live counting starts at yesterday and keeps up with the
+// head; leftover time in a run counts older days back to BACKFILL_DAYS. Progress
+// is kept in RpcTxCountState and a UTC day is written once all of its blocks
+// are counted.
 // A failed RPC stops that chain's run at the last complete batch, so a day is
 // never written from a partial count: it stays missing (null) instead of 0.
 
@@ -49,8 +51,9 @@ const CHAIN_CONCURRENCY = 3;
 const REQUEST_TIMEOUT_MS = 20000;
 const RETRIES = 3;
 // Bump when the counted metrics change: older states restart the backfill so
-// every day gets the new metrics.
-const STATE_VERSION = 2;
+// every day gets the new metrics. Version 2 (oldest day first) states are
+// converted, keeping the days they wrote.
+const STATE_VERSION = 3;
 const WEI_PER_GWEI = 1e9;
 const WEI_PER_TOKEN = 1e18;
 
@@ -247,12 +250,34 @@ function dayRows(day) {
   return rows;
 }
 
+// Add one block to a day's totals. `prevTimestamp` is its parent's timestamp
+// (null if unknown); `fees` is the block's fee totals, if fetched.
+function addBlock(totals, block, prevTimestamp, fees) {
+  const seconds = prevTimestamp === null ? 1 : Math.max(1, block.timestamp - prevTimestamp);
+  totals.maxTps = Math.max(totals.maxTps, block.txCount / seconds);
+  totals.tx += block.txCount;
+  totals.gas += block.gasUsed;
+  if (totals.withFees && fees) {
+    totals.fees += Number(fees.feesWei) / WEI_PER_TOKEN;
+    totals.priceSum += Number(fees.priceSumWei) / WEI_PER_GWEI;
+    totals.priceTxs += fees.txs;
+  }
+}
+
+async function blockTimestamp(url, number) {
+  return number >= 0 ? (await getBlocks(url, [number]))[0].timestamp : null;
+}
+
 /**
- * Count new blocks for one chain and store the completed days.
+ * Count one chain's blocks and store the completed days, newest first: live
+ * counting starts at yesterday's first block and keeps up with the head; time
+ * left in a run goes to older days, one whole day at a time, back to
+ * BACKFILL_DAYS ago.
  * @param {string} chainId
  * @param {string} rpcUrl
  * @param {{ maxBlocks?: number, now?: number, deadline?: number }} [options]
- *   deadline: epoch ms after which the chain stops at the next batch
+ *   maxBlocks: blocks counted per run; deadline: epoch ms after which the
+ *   chain stops at the next batch
  */
 async function updateChain(chainId, rpcUrl, {
   maxBlocks = MAX_BLOCKS_PER_RUN,
@@ -260,17 +285,17 @@ async function updateChain(chainId, rpcUrl, {
   deadline = Date.now() + RUN_BUDGET_MS
 } = {}) {
   const today = dayStart(now);
-  let state = (await RpcTxCountState.findOne({ chainId }).lean()) || {};
-  if (state.version !== STATE_VERSION) {
-    state = {};
-  }
+  const yesterday = today - DAY_SECONDS;
+  const saved = (await RpcTxCountState.findOne({ chainId }).lean()) || {};
+  const state = saved.version === STATE_VERSION || saved.version === 2 ? saved : {};
   // feeSource: 'block' or 'tx' (how receipts are fetched), 'none' if neither
   // works; unset until the first block with transactions.
-  let { lastBlock, lastTimestamp, dayTimestamp, day, feeSource } = state;
+  let { lastBlock, lastTimestamp, dayTimestamp, day, feeSource, backfill = null } = state;
   let blocksCounted = 0;
   let daysWritten = 0;
   const pending = new Map(); // day timestamp -> day totals
   let lastSave = Date.now();
+  const hasTime = () => Date.now() < deadline && blocksCounted < maxBlocks;
 
   // Finish the current day (and any days without blocks before `nextDay`).
   const closeDaysBefore = (nextDay) => {
@@ -311,6 +336,7 @@ async function updateChain(chainId, rpcUrl, {
           lastTimestamp,
           dayTimestamp,
           day,
+          backfill,
           feeSource,
           lastError,
           lastRunAt: new Date()
@@ -318,6 +344,11 @@ async function updateChain(chainId, rpcUrl, {
       },
       { upsert: true }
     );
+  };
+  const saveIfDue = async () => {
+    if (pending.size > 0 || Date.now() - lastSave >= SAVE_INTERVAL_MS) {
+      await flush();
+    }
   };
 
   // Fees for a batch of blocks, trying block receipts, then per-transaction
@@ -333,51 +364,52 @@ async function updateChain(chainId, rpcUrl, {
     logger.info(`[RPC Metrics] Chain ${chainId}: RPC returns no receipts; skipping fees and gas price`);
     feeSource = 'none';
     day.withFees = false;
+    if (backfill && backfill.totals) backfill.totals.withFees = false;
     return null;
+  };
+
+  // The next step of blocks from `from` up to `to`, with their fees.
+  const nextStep = async (from, to) => {
+    const numbers = [];
+    for (let n = from; n <= Math.min(from + BLOCKS_PER_STEP - 1, to, from + maxBlocks - blocksCounted - 1); n++) {
+      numbers.push(n);
+    }
+    const blocks = await getBlocks(rpcUrl, numbers);
+    const fees = await batchFees(blocks);
+    blocksCounted += blocks.length;
+    return blocks.map(block => [block, fees && fees.get(block.number)]);
   };
 
   try {
     const head = await getHead(rpcUrl);
 
-    if (lastBlock === undefined || lastBlock === null) {
-      const start = today - BACKFILL_DAYS * DAY_SECONDS;
-      lastBlock = (await findFirstBlockAtOrAfter(rpcUrl, start, head)) - 1;
-      // The parent's timestamp gives the first block's rate for maxTps.
-      lastTimestamp = lastBlock >= 0 ? (await getBlocks(rpcUrl, [lastBlock]))[0].timestamp : null;
-      dayTimestamp = start;
-      day = newDay(true);
+    // A new chain, or a state from before newest-first counting: start live
+    // counting at yesterday. A version-2 state that is behind keeps the days
+    // it wrote; the backfill redoes its unfinished day and the ones after it.
+    if (state.version !== STATE_VERSION && !(state.version === 2 && dayTimestamp >= yesterday)) {
+      const floor = state.version === 2 ? dayTimestamp : today - BACKFILL_DAYS * DAY_SECONDS;
+      const start = await findFirstBlockAtOrAfter(rpcUrl, yesterday, head);
+      lastBlock = start - 1;
+      lastTimestamp = await blockTimestamp(rpcUrl, lastBlock);
+      dayTimestamp = yesterday;
+      day = newDay(feeSource !== 'none');
+      backfill = yesterday - DAY_SECONDS >= floor
+        ? { day: yesterday - DAY_SECONDS, floor, endBlock: start - 1 }
+        : null;
     }
 
-    const end = Math.min(head, lastBlock + maxBlocks);
-    for (let from = lastBlock + 1; from <= end && Date.now() < deadline; from += BLOCKS_PER_STEP) {
-      const numbers = [];
-      for (let n = from; n <= Math.min(from + BLOCKS_PER_STEP - 1, end); n++) numbers.push(n);
-
-      const blocks = await getBlocks(rpcUrl, numbers);
-      const fees = await batchFees(blocks);
-
-      for (const block of blocks) {
+    // Live: from the last counted block towards the head.
+    while (lastBlock < head && hasTime()) {
+      for (const [block, fees] of await nextStep(lastBlock + 1, head)) {
         const blockDay = dayStart(block.timestamp);
         if (blockDay > dayTimestamp) {
           closeDaysBefore(blockDay);
         }
-        const seconds = lastTimestamp === null ? 1 : Math.max(1, block.timestamp - lastTimestamp);
-        day.maxTps = Math.max(day.maxTps, block.txCount / seconds);
-        day.tx += block.txCount;
-        day.gas += block.gasUsed;
-        const blockFees = fees && fees.get(block.number);
-        if (day.withFees && blockFees) {
-          day.fees += Number(blockFees.feesWei) / WEI_PER_TOKEN;
-          day.priceSum += Number(blockFees.priceSumWei) / WEI_PER_GWEI;
-          day.priceTxs += blockFees.txs;
-        }
+        addBlock(day, block, lastTimestamp, fees);
         lastBlock = block.number;
         lastTimestamp = block.timestamp;
-        blocksCounted++;
       }
-      if (pending.size > 0 || Date.now() - lastSave >= SAVE_INTERVAL_MS) {
-        await flush();
-      }
+      await saveIfDue();
     }
     const caughtUp = lastBlock === head;
 
@@ -388,6 +420,37 @@ async function updateChain(chainId, rpcUrl, {
         closeDaysBefore(today);
       }
       pending.set(today, day);
+      await flush();
+    }
+
+    // Older days, newest first, each written once all its blocks are counted.
+    while (caughtUp && backfill && hasTime()) {
+      if (backfill.nextBlock == null) {
+        const first = await findFirstBlockAtOrAfter(rpcUrl, backfill.day, backfill.endBlock);
+        backfill = {
+          ...backfill,
+          startBlock: first,
+          nextBlock: first,
+          prevTimestamp: await blockTimestamp(rpcUrl, first - 1),
+          totals: newDay(feeSource !== 'none')
+        };
+      }
+      while (backfill.nextBlock <= backfill.endBlock && hasTime()) {
+        for (const [block, fees] of await nextStep(backfill.nextBlock, backfill.endBlock)) {
+          addBlock(backfill.totals, block, backfill.prevTimestamp, fees);
+          backfill.nextBlock = block.number + 1;
+          backfill.prevTimestamp = block.timestamp;
+        }
+        await saveIfDue();
+      }
+      if (backfill.nextBlock > backfill.endBlock) {
+        pending.set(backfill.day, backfill.totals);
+        const older = backfill.day - DAY_SECONDS;
+        backfill = older >= backfill.floor
+          ? { day: older, floor: backfill.floor, endBlock: backfill.startBlock - 1 }
+          : null;
+        await flush();
+      }
     }
     await flush();
 
@@ -395,7 +458,8 @@ async function updateChain(chainId, rpcUrl, {
       lastBlock,
       head,
       feeSource,
-      caughtUp
+      caughtUp,
+      backfillDay: backfill ? new Date(backfill.day * 1000).toISOString().slice(0, 10) : 'done'
     });
     return { success: true, chainId, blocksCounted, daysWritten, caughtUp };
   } catch (error) {

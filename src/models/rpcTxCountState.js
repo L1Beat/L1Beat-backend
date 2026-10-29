@@ -12,13 +12,17 @@ const rpcTxCountStateSchema = new mongoose.Schema({
   },
   // rpcMetricsService's STATE_VERSION when this was saved.
   version: Number,
-  // Last block counted (and its timestamp, for the next block's rate), the UTC
-  // day it falls in and that day's running totals. Unset until the first run
-  // finds the backfill start block.
+  // Live counting: last block counted (and its timestamp, for the next block's
+  // rate), the UTC day it falls in and that day's running totals. Unset until
+  // the first run finds yesterday's first block.
   lastBlock: Number,
   lastTimestamp: Number,
   dayTimestamp: Number,
   day: mongoose.Schema.Types.Mixed,
+  // Older days, counted newest first after live counting is caught up:
+  // { day, floor, endBlock, startBlock?, nextBlock?, prevTimestamp?, totals? }.
+  // Null once every day back to `floor` is written.
+  backfill: mongoose.Schema.Types.Mixed,
   // How receipts are fetched for fees: 'block', 'tx', or 'none' if the RPC
   // returns neither.
   feeSource: String,

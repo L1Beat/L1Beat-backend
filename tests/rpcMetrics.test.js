@@ -29,7 +29,7 @@ const TODAY = 1_700_006_400 - (1_700_006_400 % DAY);
 const NOW = TODAY + 6 * 60 * 60;
 const URL = 'https://rpc.example';
 const GWEI = 1e9;
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 
 // Fake chain: block n has timestamp blockTimes[n] and n % 3 transactions, each
 // using 21000 gas at 25 gwei. `receipts` is which receipt method the RPC has.
@@ -250,6 +250,62 @@ describe('rpcMetricsService.updateChain', () => {
       { $set: expect.objectContaining({ lastBlock: 9, day: expect.objectContaining({ tx: 7 }) }) },
       { upsert: true }
     );
+  });
+
+  it('counts yesterday first, then older days newest first across runs', async () => {
+    // Blocks 0-49 three days ago, none two days ago, 50-59 yesterday, 60-64 today.
+    const times = [];
+    for (let n = 0; n < 50; n++) times.push(TODAY - 3 * DAY + n);
+    for (let n = 50; n < 60; n++) times.push(TODAY - DAY + n);
+    for (let n = 60; n < 65; n++) times.push(TODAY + n);
+    fakeChain(times);
+    stubState(null);
+
+    // First run: 20 blocks, so only 5 left for three days ago.
+    const first = await updateChain('1', URL, { now: NOW, maxBlocks: 20 });
+
+    expect(first).toMatchObject({ success: true, blocksCounted: 20, caughtUp: true });
+    let days = written(TxCount);
+    expect(days[TODAY - DAY].value).toBe(txOf(50, 59));
+    expect(days[TODAY].value).toBe(txOf(60, 64));
+    expect(days[TODAY - 2 * DAY].value).toBe(0);
+    expect(days[TODAY - 3 * DAY]).toBeUndefined();
+    const saved = RpcTxCountState.updateOne.mock.calls.at(-1)[1].$set;
+    expect(saved.backfill).toMatchObject({ day: TODAY - 3 * DAY, nextBlock: 5 });
+
+    // Next run picks up three days ago where it stopped.
+    TxCount.bulkWrite.mockClear();
+    stubState(saved);
+    await updateChain('1', URL, { now: NOW });
+
+    days = written(TxCount);
+    expect(days[TODAY - 3 * DAY].value).toBe(txOf(0, 49));
+    expect(written(MaxTps)[TODAY - 3 * DAY].value).toBe(2);
+    expect(days[TODAY - 30 * DAY].value).toBe(0);
+    expect(RpcTxCountState.updateOne.mock.calls.at(-1)[1].$set.backfill).toBeNull();
+  });
+
+  it('converts an oldest-first state, keeping the days it already wrote', async () => {
+    const times = [];
+    for (let n = 0; n < 50; n++) times.push(TODAY - 3 * DAY + n);
+    for (let n = 50; n < 60; n++) times.push(TODAY - DAY + n);
+    fakeChain(times);
+    // Version 2, partway through three days ago; older days are written.
+    RpcTxCountState.findOne.mockReturnValue({
+      lean: async () => ({
+        version: 2, lastBlock: 10, lastTimestamp: TODAY - 3 * DAY + 10,
+        dayTimestamp: TODAY - 3 * DAY, day: totals({ tx: 3 }), feeSource: 'block'
+      })
+    });
+
+    await updateChain('1', URL, { now: NOW });
+
+    const days = written(TxCount);
+    expect(days[TODAY - DAY].value).toBe(txOf(50, 59));
+    expect(days[TODAY - 2 * DAY].value).toBe(0);
+    // The unfinished day is recounted in full; days before it are left alone.
+    expect(days[TODAY - 3 * DAY].value).toBe(txOf(0, 49));
+    expect(days[TODAY - 4 * DAY]).toBeUndefined();
   });
 
   it('writes nothing when the RPC node is syncing', async () => {
