@@ -82,6 +82,33 @@ describe('TPS Endpoints', () => {
     });
   });
 
+  describe('GET /api/tps/all/history', () => {
+    it('returns each chain\'s history, newest first, within the window', async () => {
+      const response = await get('/api/tps/all/history?days=7');
+
+      expect(response.status).toBe(200);
+      expect(response.body.days).toBe(7);
+      expect(response.body.count).toBe(response.body.data.length);
+
+      const cutoff = Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60;
+      for (const item of response.body.data) {
+        expect(item).toHaveProperty('evmChainId');
+        expect(item).toHaveProperty('chainId');
+        expect(Array.isArray(item.history)).toBe(true);
+        for (let i = 0; i < item.history.length; i++) {
+          expect(typeof item.history[i].value).toBe('number');
+          expect(item.history[i].timestamp).toBeGreaterThanOrEqual(cutoff);
+          if (i > 0) expect(item.history[i].timestamp).toBeLessThan(item.history[i - 1].timestamp);
+        }
+      }
+    });
+
+    it('rejects days outside 1-30', async () => {
+      expect((await get('/api/tps/all/history?days=31')).status).toBe(400);
+      expect((await get('/api/tps/all/history?days=0')).status).toBe(400);
+    });
+  });
+
   describe('GET /api/tps/network/latest', () => {
     it('should return latest network-wide TPS', async () => {
       const response = await get('/api/tps/network/latest');
