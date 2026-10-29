@@ -40,6 +40,11 @@ const MIN_BATCH_SIZE = 5;
 // Third-party RPCs: few requests at a time, and a cap per run so a busy chain's
 // 30-day backfill spreads over several hourly runs instead of one long one.
 const MAX_BLOCKS_PER_RUN = 250000;
+// A run stops by this deadline so it ends before the next hourly run starts;
+// chains pick up where they stopped. Progress is saved at least this often, so
+// a restart mid-run loses little.
+const RUN_BUDGET_MS = 45 * 60 * 1000;
+const SAVE_INTERVAL_MS = 60 * 1000;
 const CHAIN_CONCURRENCY = 3;
 const REQUEST_TIMEOUT_MS = 20000;
 const RETRIES = 3;
@@ -246,9 +251,14 @@ function dayRows(day) {
  * Count new blocks for one chain and store the completed days.
  * @param {string} chainId
  * @param {string} rpcUrl
- * @param {{ maxBlocks?: number, now?: number }} [options]
+ * @param {{ maxBlocks?: number, now?: number, deadline?: number }} [options]
+ *   deadline: epoch ms after which the chain stops at the next batch
  */
-async function updateChain(chainId, rpcUrl, { maxBlocks = MAX_BLOCKS_PER_RUN, now = Math.floor(Date.now() / 1000) } = {}) {
+async function updateChain(chainId, rpcUrl, {
+  maxBlocks = MAX_BLOCKS_PER_RUN,
+  now = Math.floor(Date.now() / 1000),
+  deadline = Date.now() + RUN_BUDGET_MS
+} = {}) {
   const today = dayStart(now);
   let state = (await RpcTxCountState.findOne({ chainId }).lean()) || {};
   if (state.version !== STATE_VERSION) {
@@ -260,6 +270,7 @@ async function updateChain(chainId, rpcUrl, { maxBlocks = MAX_BLOCKS_PER_RUN, no
   let blocksCounted = 0;
   let daysWritten = 0;
   const pending = new Map(); // day timestamp -> day totals
+  let lastSave = Date.now();
 
   // Finish the current day (and any days without blocks before `nextDay`).
   const closeDaysBefore = (nextDay) => {
@@ -290,6 +301,7 @@ async function updateChain(chainId, rpcUrl, { maxBlocks = MAX_BLOCKS_PER_RUN, no
       daysWritten += pending.size;
       pending.clear();
     }
+    lastSave = Date.now();
     await RpcTxCountState.updateOne(
       { chainId },
       {
@@ -337,7 +349,7 @@ async function updateChain(chainId, rpcUrl, { maxBlocks = MAX_BLOCKS_PER_RUN, no
     }
 
     const end = Math.min(head, lastBlock + maxBlocks);
-    for (let from = lastBlock + 1; from <= end; from += BLOCKS_PER_STEP) {
+    for (let from = lastBlock + 1; from <= end && Date.now() < deadline; from += BLOCKS_PER_STEP) {
       const numbers = [];
       for (let n = from; n <= Math.min(from + BLOCKS_PER_STEP - 1, end); n++) numbers.push(n);
 
@@ -363,14 +375,15 @@ async function updateChain(chainId, rpcUrl, { maxBlocks = MAX_BLOCKS_PER_RUN, no
         lastTimestamp = block.timestamp;
         blocksCounted++;
       }
-      if (pending.size > 0) {
+      if (pending.size > 0 || Date.now() - lastSave >= SAVE_INTERVAL_MS) {
         await flush();
       }
     }
+    const caughtUp = lastBlock === head;
 
     // At the head every past day is complete, including days with no blocks.
     // Also store today's running totals, like the metrics API's in-progress bucket.
-    if (end === head) {
+    if (caughtUp) {
       if (today > dayTimestamp) {
         closeDaysBefore(today);
       }
@@ -382,9 +395,9 @@ async function updateChain(chainId, rpcUrl, { maxBlocks = MAX_BLOCKS_PER_RUN, no
       lastBlock,
       head,
       feeSource,
-      caughtUp: end === head
+      caughtUp
     });
-    return { success: true, chainId, blocksCounted, daysWritten, caughtUp: end === head };
+    return { success: true, chainId, blocksCounted, daysWritten, caughtUp };
   } catch (error) {
     logger.warn(`[RPC Metrics] Chain ${chainId} stopped after ${blocksCounted} blocks: ${error.message}`);
     try {
@@ -400,7 +413,8 @@ async function updateChain(chainId, rpcUrl, { maxBlocks = MAX_BLOCKS_PER_RUN, no
 /**
  * Update every chain the metrics API returned 404 for (each has an
  * RpcTxCountState row, created by tpsService.syncDerivedTps), then re-derive
- * their TPS. Skips if a previous run is still going.
+ * their TPS. Skips if a previous run is still going. Chains run least recently
+ * updated first, so ones a run's deadline cut off go first next time.
  */
 async function updateAllChains(options = {}) {
   if (running) {
@@ -410,19 +424,27 @@ async function updateAllChains(options = {}) {
   running = true;
   try {
     const tpsService = require('./tpsService');
-    const states = await RpcTxCountState.find().select('chainId').lean();
-    const chains = await Chain.find({ evmChainId: { $in: states.map(s => Number(s.chainId)) } })
-      .select('evmChainId chainName rpcUrl rpcUrls')
-      .lean();
+    const { deadline = Date.now() + RUN_BUDGET_MS, ...chainOptions } = options;
+    const states = await RpcTxCountState.find().select('chainId lastRunAt').sort({ lastRunAt: 1 }).lean();
+    const chainsById = new Map(
+      (await Chain.find({ evmChainId: { $in: states.map(s => Number(s.chainId)) } })
+        .select('evmChainId chainName rpcUrl rpcUrls')
+        .lean())
+        .map(chain => [String(chain.evmChainId), chain])
+    );
+    const chains = states.map(s => chainsById.get(s.chainId)).filter(Boolean);
 
     const limit = pLimit(CHAIN_CONCURRENCY);
     const results = await Promise.all(chains.map(chain => limit(async () => {
       const chainId = String(chain.evmChainId);
+      if (Date.now() >= deadline) {
+        return { success: false, chainId, error: 'run deadline reached' };
+      }
       const rpcUrl = chain.rpcUrl || (chain.rpcUrls || [])[0];
       if (!rpcUrl || !/^https?:\/\//.test(rpcUrl)) {
         return { success: false, chainId, error: 'no RPC URL' };
       }
-      const result = await updateChain(chainId, rpcUrl, options);
+      const result = await updateChain(chainId, rpcUrl, { ...chainOptions, deadline });
       if (result.daysWritten > 0) {
         await tpsService.updateTpsData(chainId);
       }
@@ -430,7 +452,8 @@ async function updateAllChains(options = {}) {
     })));
 
     const succeeded = results.filter(r => r.success).length;
-    logger.info(`[RPC Metrics] Run done: ${succeeded} of ${results.length} chains updated`);
+    const deferred = results.filter(r => r.error === 'run deadline reached').length;
+    logger.info(`[RPC Metrics] Run done: ${succeeded} of ${results.length} chains updated, ${deferred} left for the next run`);
     return { success: true, chains: results.length, succeeded };
   } finally {
     running = false;

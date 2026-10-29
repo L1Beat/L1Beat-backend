@@ -11,7 +11,7 @@ jest.mock('../src/models/gasUsed', () => ({ bulkWrite: jest.fn() }));
 jest.mock('../src/models/maxTps', () => ({ bulkWrite: jest.fn() }));
 jest.mock('../src/models/feesPaid', () => ({ bulkWrite: jest.fn() }));
 jest.mock('../src/models/avgGasPrice', () => ({ bulkWrite: jest.fn() }));
-jest.mock('../src/models/rpcTxCountState', () => ({ findOne: jest.fn(), updateOne: jest.fn() }));
+jest.mock('../src/models/rpcTxCountState', () => ({ find: jest.fn(), findOne: jest.fn(), updateOne: jest.fn() }));
 jest.mock('../src/models/chain', () => ({ find: jest.fn() }));
 
 const axios = require('axios');
@@ -21,7 +21,8 @@ const MaxTps = require('../src/models/maxTps');
 const FeesPaid = require('../src/models/feesPaid');
 const AvgGasPrice = require('../src/models/avgGasPrice');
 const RpcTxCountState = require('../src/models/rpcTxCountState');
-const { updateChain } = require('../src/services/rpcMetricsService');
+const Chain = require('../src/models/chain');
+const { updateChain, updateAllChains } = require('../src/services/rpcMetricsService');
 
 const DAY = 24 * 60 * 60;
 const TODAY = 1_700_006_400 - (1_700_006_400 % DAY);
@@ -234,6 +235,23 @@ describe('rpcMetricsService.updateChain', () => {
     expect(written(TxCount)[TODAY - DAY].value).toBe(txOf(0, 119));
   });
 
+  it('stops at the deadline, keeping progress and not closing days', async () => {
+    const times = [];
+    for (let n = 0; n < 50; n++) times.push(TODAY - 3 * DAY + n);
+    fakeChain(times);
+    stubState({ lastBlock: 9, lastTimestamp: TODAY - 3 * DAY + 9, dayTimestamp: TODAY - 3 * DAY, day: totals({ tx: 7 }) });
+
+    const result = await updateChain('1', URL, { now: NOW, deadline: Date.now() - 1 });
+
+    expect(result).toMatchObject({ success: true, blocksCounted: 0, caughtUp: false });
+    expect(TxCount.bulkWrite).not.toHaveBeenCalled();
+    expect(RpcTxCountState.updateOne).toHaveBeenLastCalledWith(
+      { chainId: '1' },
+      { $set: expect.objectContaining({ lastBlock: 9, day: expect.objectContaining({ tx: 7 }) }) },
+      { upsert: true }
+    );
+  });
+
   it('writes nothing when the RPC node is syncing', async () => {
     fakeChain([TODAY - 5 * DAY], { syncing: { currentBlock: '0x1' } });
     stubState({ lastBlock: 0, lastTimestamp: TODAY - 5 * DAY, dayTimestamp: TODAY - 5 * DAY, day: totals() });
@@ -242,5 +260,25 @@ describe('rpcMetricsService.updateChain', () => {
 
     expect(result).toMatchObject({ success: false, error: 'RPC node is syncing' });
     expect(TxCount.bulkWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('rpcMetricsService.updateAllChains', () => {
+  const query = (rows) => {
+    const q = { select: () => q, sort: () => q, lean: async () => rows };
+    return q;
+  };
+
+  it('leaves chains for the next run once the deadline has passed', async () => {
+    RpcTxCountState.find.mockReturnValue(query([{ chainId: '2' }, { chainId: '1' }]));
+    Chain.find.mockReturnValue(query([
+      { evmChainId: 1, rpcUrl: URL },
+      { evmChainId: 2, rpcUrl: URL }
+    ]));
+
+    const result = await updateAllChains({ deadline: Date.now() - 1 });
+
+    expect(result).toMatchObject({ success: true, chains: 2, succeeded: 0 });
+    expect(axios.post).not.toHaveBeenCalled();
   });
 });
