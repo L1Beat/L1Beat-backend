@@ -13,6 +13,7 @@ jest.mock('../src/models/feesPaid', () => ({ bulkWrite: jest.fn() }));
 jest.mock('../src/models/avgGasPrice', () => ({ bulkWrite: jest.fn() }));
 jest.mock('../src/models/rpcTxCountState', () => ({ find: jest.fn(), findOne: jest.fn(), updateOne: jest.fn() }));
 jest.mock('../src/models/chain', () => ({ find: jest.fn() }));
+jest.mock('../src/services/tpsService', () => ({ updateTpsData: jest.fn() }));
 
 const axios = require('axios');
 const TxCount = require('../src/models/txCount');
@@ -22,6 +23,7 @@ const FeesPaid = require('../src/models/feesPaid');
 const AvgGasPrice = require('../src/models/avgGasPrice');
 const RpcTxCountState = require('../src/models/rpcTxCountState');
 const Chain = require('../src/models/chain');
+const tpsService = require('../src/services/tpsService');
 const { updateChain, updateAllChains } = require('../src/services/rpcMetricsService');
 
 const DAY = 24 * 60 * 60;
@@ -245,6 +247,7 @@ describe('rpcMetricsService.updateChain', () => {
 
     expect(result).toMatchObject({ success: true, blocksCounted: 0, caughtUp: false });
     expect(TxCount.bulkWrite).not.toHaveBeenCalled();
+    expect(tpsService.updateTpsData).not.toHaveBeenCalled();
     expect(RpcTxCountState.updateOne).toHaveBeenLastCalledWith(
       { chainId: '1' },
       { $set: expect.objectContaining({ lastBlock: 9, day: expect.objectContaining({ tx: 7 }) }) },
@@ -268,6 +271,8 @@ describe('rpcMetricsService.updateChain', () => {
     let days = written(TxCount);
     expect(days[TODAY - DAY].value).toBe(txOf(50, 59));
     expect(days[TODAY].value).toBe(txOf(60, 64));
+    // TPS follows each write, not the end of the run.
+    expect(tpsService.updateTpsData).toHaveBeenCalledWith('1');
     expect(days[TODAY - 2 * DAY].value).toBe(0);
     expect(days[TODAY - 3 * DAY]).toBeUndefined();
     const saved = RpcTxCountState.updateOne.mock.calls.at(-1)[1].$set;

@@ -8,6 +8,7 @@ const AvgGasPrice = require('../models/avgGasPrice');
 const RpcTxCountState = require('../models/rpcTxCountState');
 const Chain = require('../models/chain');
 const logger = require('../utils/logger');
+const tpsService = require('./tpsService');
 
 // Daily metrics for chains the metrics API doesn't cover (it returns 404),
 // counted from the chain's own public RPC and stored in the same collections
@@ -325,6 +326,8 @@ async function updateChain(chainId, rpcUrl, {
       await Promise.all([...opsByModel].map(([model, ops]) => model.bulkWrite(ops, { ordered: false })));
       daysWritten += pending.size;
       pending.clear();
+      // TPS is derived from txCount; keep it in step as each day lands.
+      await tpsService.updateTpsData(chainId);
     }
     lastSave = Date.now();
     await RpcTxCountState.updateOne(
@@ -476,9 +479,9 @@ async function updateChain(chainId, rpcUrl, {
 
 /**
  * Update every chain the metrics API returned 404 for (each has an
- * RpcTxCountState row, created by tpsService.syncDerivedTps), then re-derive
- * their TPS. Skips if a previous run is still going. Chains run least recently
- * updated first, so ones a run's deadline cut off go first next time.
+ * RpcTxCountState row, created by tpsService.syncDerivedTps). Skips if a
+ * previous run is still going. Chains run least recently updated first, so
+ * ones a run's deadline cut off go first next time.
  */
 async function updateAllChains(options = {}) {
   if (running) {
@@ -487,7 +490,6 @@ async function updateAllChains(options = {}) {
   }
   running = true;
   try {
-    const tpsService = require('./tpsService');
     const { deadline = Date.now() + RUN_BUDGET_MS, ...chainOptions } = options;
     const states = await RpcTxCountState.find().select('chainId lastRunAt').sort({ lastRunAt: 1 }).lean();
     const chainsById = new Map(
@@ -508,11 +510,7 @@ async function updateAllChains(options = {}) {
       if (!rpcUrl || !/^https?:\/\//.test(rpcUrl)) {
         return { success: false, chainId, error: 'no RPC URL' };
       }
-      const result = await updateChain(chainId, rpcUrl, { ...chainOptions, deadline });
-      if (result.daysWritten > 0) {
-        await tpsService.updateTpsData(chainId);
-      }
-      return result;
+      return updateChain(chainId, rpcUrl, { ...chainOptions, deadline });
     })));
 
     const succeeded = results.filter(r => r.success).length;
