@@ -71,6 +71,25 @@ function fakeChain(blockTimes, { failFrom = Infinity, receipts = 'block', maxBat
   });
 }
 
+// Retry waits happen at once.
+const instantWaits = () => jest.spyOn(global, 'setTimeout').mockImplementation((fn) => { fn(); return 0; });
+
+// Make the fake chain's first `times` requests fail with `error` (if `when` matches).
+function failFirst(times, error, when = () => true) {
+  const real = axios.post.getMockImplementation();
+  let failed = 0;
+  axios.post.mockImplementation(async (url, body) => {
+    if (failed < times && when(body)) {
+      failed++;
+      throw error();
+    }
+    return real(url, body);
+  });
+}
+const httpError = (status, headers = {}) => () =>
+  Object.assign(new Error(`Request failed with status code ${status}`), { response: { status, headers } });
+const batchLengths = () => axios.post.mock.calls.map(([, body]) => body.length);
+
 function stubState(state) {
   RpcTxCountState.findOne.mockReturnValue({ lean: async () => state && { version: STATE_VERSION, ...state } });
 }
@@ -193,6 +212,7 @@ describe('rpcMetricsService.updateChain', () => {
     for (let n = 150; n < 160; n++) times.push(TODAY + n);
     fakeChain(times, { failFrom: 120 });
     stubState({ lastBlock: -1, dayTimestamp: TODAY - DAY, day: totals(), lastTimestamp: null });
+    instantWaits();
 
     const result = await updateChain('1', URL, { now: NOW });
 
@@ -230,8 +250,9 @@ describe('rpcMetricsService.updateChain', () => {
     times.push(TODAY + 1);
     fakeChain(times, { maxBatch: 40 });
     stubState({ lastBlock: -1, lastTimestamp: null, dayTimestamp: TODAY - DAY, day: totals() });
+    instantWaits();
 
-    const result = await updateChain('1', URL, { now: NOW });
+    const result = await updateChain('1', 'https://small-batches.example', { now: NOW });
 
     expect(result).toMatchObject({ success: true, blocksCounted: 121 });
     expect(written(TxCount)[TODAY - DAY].value).toBe(txOf(0, 119));
@@ -311,6 +332,54 @@ describe('rpcMetricsService.updateChain', () => {
     // The unfinished day is recounted in full; days before it are left alone.
     expect(days[TODAY - 3 * DAY].value).toBe(txOf(0, 49));
     expect(days[TODAY - 4 * DAY]).toBeUndefined();
+  });
+
+  it('retries a passing server error without shrinking the batch', async () => {
+    const times = [];
+    for (let n = 0; n < 120; n++) times.push(TODAY - DAY + n);
+    times.push(TODAY + 1);
+    fakeChain(times);
+    failFirst(1, httpError(500), body => body.length === 100);
+    stubState({ lastBlock: -1, lastTimestamp: null, dayTimestamp: TODAY - DAY, day: totals() });
+    instantWaits();
+
+    const result = await updateChain('1', 'https://transient.example', { now: NOW });
+
+    expect(result).toMatchObject({ success: true, blocksCounted: 121 });
+    expect(batchLengths()).not.toContain(50);
+  });
+
+  it('waits out a rate limit instead of giving up', async () => {
+    const times = [TODAY - DAY + 1, TODAY - DAY + 2, TODAY + 1];
+    fakeChain(times);
+    failFirst(2, httpError(429, { 'retry-after': '3' }), body => body[0].method === 'eth_getBlockByNumber');
+    stubState({ lastBlock: -1, lastTimestamp: null, dayTimestamp: TODAY - DAY, day: totals() });
+    const waits = instantWaits();
+
+    const result = await updateChain('1', 'https://rate-limited.example', { now: NOW });
+
+    expect(result).toMatchObject({ success: true, blocksCounted: 3 });
+    expect(written(TxCount)[TODAY - DAY].value).toBe(txOf(0, 1));
+    expect(waits).toHaveBeenCalledWith(expect.any(Function), 3000);
+  });
+
+  it('grows the batch size back after a run of successes', async () => {
+    const times = [];
+    for (let n = 0; n < 3000; n++) times.push(TODAY - DAY + n);
+    times.push(TODAY + 1);
+    fakeChain(times);
+    // Batches of 100 fail through every retry once, then the RPC recovers.
+    failFirst(3, httpError(500), body => body.length === 100);
+    stubState({ lastBlock: -1, lastTimestamp: null, dayTimestamp: TODAY - DAY, day: totals() });
+    instantWaits();
+
+    const result = await updateChain('1', 'https://recovers.example', { now: NOW });
+
+    expect(result.success).toBe(true);
+    const lengths = batchLengths();
+    const shrunk = lengths.indexOf(50);
+    expect(shrunk).toBeGreaterThan(-1);
+    expect(lengths.slice(shrunk)).toContain(100);
   });
 
   it('writes nothing when the RPC node is syncing', async () => {

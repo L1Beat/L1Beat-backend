@@ -37,9 +37,12 @@ const DAY_SECONDS = 24 * 60 * 60;
 const BACKFILL_DAYS = 30;
 const BLOCKS_PER_STEP = 100;
 // Calls per JSON-RPC batch. Halved for an RPC that rejects a batch as too
-// large (subnets.avax.network fails above ~40), down to MIN_BATCH_SIZE.
+// large (subnets.avax.network fails above ~40), down to MIN_BATCH_SIZE, and
+// doubled again after GROW_AFTER batches in a row succeed, so a few transient
+// errors don't leave an RPC at tiny batches (many more requests) for good.
 const BATCH_SIZE = 100;
 const MIN_BATCH_SIZE = 5;
+const GROW_AFTER = 50;
 // Third-party RPCs: few requests at a time, and a cap per run so a busy chain's
 // 30-day backfill spreads over several hourly runs instead of one long one.
 const MAX_BLOCKS_PER_RUN = 250000;
@@ -51,6 +54,10 @@ const SAVE_INTERVAL_MS = 60 * 1000;
 const CHAIN_CONCURRENCY = 3;
 const REQUEST_TIMEOUT_MS = 20000;
 const RETRIES = 3;
+// Rate limited (HTTP 429): wait as the RPC asks (Retry-After) or back off,
+// up to this many times per batch, instead of giving up on the chain.
+const RATE_LIMIT_RETRIES = 8;
+const MAX_BACKOFF_MS = 60 * 1000;
 // Bump when the counted metrics change: older states restart the backfill so
 // every day gets the new metrics. Version 2 (oldest day first) states are
 // converted, keeping the days they wrote.
@@ -65,15 +72,23 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const newDay = (withFees) => ({ tx: 0, gas: 0, maxTps: 0, fees: 0, priceSum: 0, priceTxs: 0, withFees });
 
 let running = false;
-const batchSizes = new Map(); // rpc url -> calls per batch it accepts
+const batchSizes = new Map(); // rpc url -> { size, ok: batches in a row that succeeded }
 
 // The RPC doesn't offer this method; retrying won't help.
 const isUnsupported = (error) =>
   error.rpcCode === -32601 || /not (found|supported|available|implemented)|does not exist/i.test(error.message);
 
+// How long a 429 response asks to wait, if it says (Retry-After in seconds).
+function retryAfterMs(error) {
+  const header = error.response && error.response.headers && error.response.headers['retry-after'];
+  const seconds = Number(header);
+  return header !== undefined && Number.isFinite(seconds) ? Math.min(MAX_BACKOFF_MS, seconds * 1000) : null;
+}
+
 // Send one JSON-RPC batch, with retries. Results are in call order.
 async function sendBatch(url, calls) {
   const body = calls.map(([method, params], id) => ({ jsonrpc: '2.0', id, method, params }));
+  let rateLimited = 0;
   for (let attempt = 1; ; attempt++) {
     try {
       let response;
@@ -84,8 +99,12 @@ async function sendBatch(url, calls) {
         });
       } catch (error) {
         const status = error.response && error.response.status;
-        if (calls.length > MIN_BATCH_SIZE && (status === 413 || status >= 500)) {
-          error.batchTooLarge = true;
+        error.rateLimited = status === 429;
+        if (calls.length > MIN_BATCH_SIZE) {
+          // 413 says so outright. A 5xx may also be a passing failure, so it
+          // only counts as "too large" if it persists through the retries.
+          error.batchTooLarge = status === 413;
+          error.maybeTooLarge = status >= 500;
         }
         throw error;
       }
@@ -107,7 +126,17 @@ async function sendBatch(url, calls) {
         return r.result;
       });
     } catch (error) {
-      if (attempt >= RETRIES || error.batchTooLarge || isUnsupported(error)) throw error;
+      if (error.rateLimited && rateLimited < RATE_LIMIT_RETRIES) {
+        rateLimited++;
+        attempt--; // waiting out a rate limit isn't a failed attempt
+        await sleep(retryAfterMs(error) ?? Math.min(MAX_BACKOFF_MS, 5000 * 2 ** (rateLimited - 1)));
+        continue;
+      }
+      if (error.batchTooLarge || isUnsupported(error)) throw error;
+      if (attempt >= RETRIES) {
+        error.batchTooLarge = Boolean(error.maybeTooLarge);
+        throw error;
+      }
       await sleep(2000 * attempt);
     }
   }
@@ -124,16 +153,21 @@ async function rpcBatch(url, calls) {
   const results = [];
   let i = 0;
   while (i < calls.length) {
-    const size = batchSizes.get(url) || BATCH_SIZE;
-    const chunk = calls.slice(i, i + size);
+    const batch = batchSizes.get(url) || { size: BATCH_SIZE, ok: 0 };
+    batchSizes.set(url, batch);
+    const chunk = calls.slice(i, i + batch.size);
     try {
       results.push(...await sendBatch(url, chunk));
       i += chunk.length;
+      if (batch.size < BATCH_SIZE && chunk.length === batch.size && ++batch.ok >= GROW_AFTER) {
+        batch.size = Math.min(BATCH_SIZE, batch.size * 2);
+        batch.ok = 0;
+      }
     } catch (error) {
       if (!error.batchTooLarge) throw error;
       const smaller = Math.max(MIN_BATCH_SIZE, Math.floor(chunk.length / 2));
       logger.info(`[RPC Metrics] ${url} rejected a batch of ${chunk.length}; using ${smaller}`);
-      batchSizes.set(url, smaller);
+      batchSizes.set(url, { size: smaller, ok: 0 });
     }
   }
   return results;
