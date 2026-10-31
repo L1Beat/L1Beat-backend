@@ -1,0 +1,34 @@
+# systemd unit for the L1Beat backend on the Hetzner box (same host as Icicle).
+# Install: sudo cp deploy/l1beat-backend.service /etc/systemd/system/
+# Secrets (PROD_MONGODB_URI, GLACIER_API_KEY, UPDATE_API_KEY, ADMIN_API_KEY)
+# live in /etc/l1beat-backend.env, mode 600.
+[Unit]
+Description=L1Beat backend (Express + MongoDB)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=selim
+Group=selim
+WorkingDirectory=/home/selim/l1beat-backend
+Environment=NODE_ENV=production
+Environment=PORT=5001
+# Bind to loopback only; nginx is the public entry point.
+Environment=HOST=127.0.0.1
+EnvironmentFile=/etc/l1beat-backend.env
+# Node 22 tarball in /opt/node22. The system node (Ubuntu apt, v18) is too old: cheerio needs >=20.18.
+ExecStart=/opt/node22/bin/node src/app.js
+Restart=always
+RestartSec=5
+MemoryHigh=1536M
+MemoryMax=2G
+# Shares the box with the Icicle explorer/indexer/archive node: yield CPU and IO to them.
+Nice=10
+CPUWeight=50
+IOWeight=50
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

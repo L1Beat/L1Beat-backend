@@ -4,6 +4,7 @@ const activeAddressesService = require('../services/activeAddressesService');
 const Chain = require('../models/chain');
 const ActiveAddresses = require('../models/activeAddresses');
 const logger = require('../utils/logger');
+const allLatestHandler = require('../utils/allLatest');
 
 // Get active addresses history for a chain
 router.get('/chains/:chainId/active-addresses/history', async (req, res) => {
@@ -45,6 +46,9 @@ router.get('/chains/:chainId/active-addresses/latest', async (req, res) => {
     });
   }
 });
+
+// Get the latest complete day's active addresses for all chains in a single call.
+router.get('/active-addresses/all/latest', allLatestHandler(ActiveAddresses, 'activeAddresses'));
 
 // Get latest network-wide total active addresses
 router.get('/active-addresses/network/latest', async (req, res) => {

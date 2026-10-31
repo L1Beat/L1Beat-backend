@@ -13,7 +13,17 @@
  */
 
 jest.mock('../src/models/tps', () => ({ bulkWrite: jest.fn(), deleteMany: jest.fn() }));
-jest.mock('../src/models/txCount', () => ({ find: jest.fn(), deleteMany: jest.fn() }));
+jest.mock('../src/models/txCount', () => ({
+  find: jest.fn(),
+  deleteMany: jest.fn(),
+  countDocuments: jest.fn(),
+  updateMany: jest.fn()
+}));
+jest.mock('../src/models/rpcTxCountState', () => ({ updateOne: jest.fn(), deleteOne: jest.fn() }));
+jest.mock('../src/models/gasUsed', () => ({ updateMany: jest.fn() }));
+jest.mock('../src/models/maxTps', () => ({ updateMany: jest.fn() }));
+jest.mock('../src/models/feesPaid', () => ({ updateMany: jest.fn() }));
+jest.mock('../src/models/avgGasPrice', () => ({ updateMany: jest.fn() }));
 jest.mock('../src/models/cumulativeTxCount', () => ({}));
 jest.mock('../src/models/chain', () => ({ find: jest.fn() }));
 // cumulativeTxCount delegates to the shared factory; stub it so requiring
@@ -29,6 +39,7 @@ jest.mock('../src/services/metricService', () => () => ({
 
 const TPS = require('../src/models/tps');
 const TxCount = require('../src/models/txCount');
+const RpcTxCountState = require('../src/models/rpcTxCountState');
 const tpsService = require('../src/services/tpsService');
 
 const NOW_SECONDS = 1_700_000_000;
@@ -94,6 +105,33 @@ describe('tpsService.updateTpsData derivation', () => {
     expect(written).toEqual([{ timestamp: NOW_SECONDS - 2 * DAY, value: 0.5 }]);
   });
 
+  it('stores quiet-chain TPS unrounded instead of as 0', async () => {
+    const getWritten = captureBulkWrite();
+    // 12 tx in a full day is 0.000138… TPS; 2-decimal rounding would store 0.
+    stubTxCountRows([{ timestamp: NOW_SECONDS - 2 * DAY, value: 12 }]);
+
+    await tpsService.updateTpsData('7272');
+
+    expect(getWritten()).toEqual([{ timestamp: NOW_SECONDS - 2 * DAY, value: 12 / DAY }]);
+  });
+
+  it('limits the query to 30 days by default and drops the bound for a backfill', async () => {
+    captureBulkWrite();
+    stubTxCountRows([{ timestamp: NOW_SECONDS - 2 * DAY, value: 1 }]);
+
+    await tpsService.updateTpsData('42');
+    expect(TxCount.find).toHaveBeenLastCalledWith({
+      chainId: '42',
+      timestamp: { $gte: NOW_SECONDS - 30 * DAY, $lte: NOW_SECONDS }
+    });
+
+    await tpsService.updateTpsData('42', { days: null });
+    expect(TxCount.find).toHaveBeenLastCalledWith({
+      chainId: '42',
+      timestamp: { $lte: NOW_SECONDS }
+    });
+  });
+
   it('returns a no-op success result when there is no txCount data', async () => {
     stubTxCountRows([]);
 
@@ -106,6 +144,7 @@ describe('tpsService.updateTpsData derivation', () => {
   it('drops a stale TPS series when the metrics API has no txCount for the chain', async () => {
     TPS.deleteMany.mockResolvedValue({ deletedCount: 1 });
     TxCount.deleteMany.mockResolvedValue({ deletedCount: 1 });
+    TxCount.countDocuments.mockResolvedValue(0);
 
     const result = await tpsService.syncDerivedTps('7979', {
       success: true,
@@ -115,9 +154,41 @@ describe('tpsService.updateTpsData derivation', () => {
     });
 
     expect(result).toMatchObject({ success: true, notFound: true, recordsProcessed: 0 });
+    expect(TxCount.deleteMany).toHaveBeenCalledWith({ chainId: '7979', source: { $ne: 'rpc' } });
     expect(TPS.deleteMany).toHaveBeenCalledWith({ chainId: '7979' });
-    expect(TxCount.deleteMany).toHaveBeenCalledWith({ chainId: '7979' });
+    // Hands the chain to rpcTxCountService.
+    expect(RpcTxCountState.updateOne).toHaveBeenCalledWith(
+      { chainId: '7979' }, { $setOnInsert: { chainId: '7979' } }, { upsert: true }
+    );
     expect(TPS.bulkWrite).not.toHaveBeenCalled();
+  });
+
+  it('keeps RPC-counted txCount on a 404 and derives TPS from it', async () => {
+    TxCount.deleteMany.mockResolvedValue({ deletedCount: 0 });
+    TxCount.countDocuments.mockResolvedValue(30);
+    const getWritten = captureBulkWrite();
+    stubTxCountRows([{ timestamp: NOW_SECONDS - 2 * DAY, value: 86400 }]);
+
+    const result = await tpsService.syncDerivedTps('2366', { success: true, notFound: true });
+
+    expect(result).toMatchObject({ success: true, notFound: true, source: 'rpc' });
+    expect(TPS.deleteMany).not.toHaveBeenCalled();
+    expect(getWritten()).toEqual([{ timestamp: NOW_SECONDS - 2 * DAY, value: 1 }]);
+  });
+
+  it('stops RPC counting once the metrics API covers the chain again', async () => {
+    RpcTxCountState.deleteOne.mockResolvedValue({ deletedCount: 1 });
+    captureBulkWrite();
+    stubTxCountRows([{ timestamp: NOW_SECONDS - 2 * DAY, value: 1 }]);
+
+    await tpsService.syncDerivedTps('2366', { success: true, recordsProcessed: 30 });
+
+    expect(RpcTxCountState.deleteOne).toHaveBeenCalledWith({ chainId: '2366' });
+    for (const model of [TxCount, require('../src/models/feesPaid')]) {
+      expect(model.updateMany).toHaveBeenCalledWith(
+        { chainId: '2366', source: 'rpc' }, { $unset: { source: 1 } }
+      );
+    }
   });
 
   it('returns a failure result (not a throw) when the write fails', async () => {

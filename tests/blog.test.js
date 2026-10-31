@@ -194,8 +194,23 @@ describe('Blog Endpoints', () => {
   });
 
   describe('POST /api/blog/sync', () => {
-    it('should trigger blog sync', async () => {
+    const UPDATE_KEY = process.env.UPDATE_API_KEY;
+
+    it('should reject requests without an API key', async () => {
       const response = await post('/api/blog/sync');
+
+      expect(response.status).toBe(401);
+      expect(response.body.success).toBe(false);
+    });
+
+    it('should reject requests with a wrong API key', async () => {
+      const response = await post('/api/blog/sync').set('x-api-key', 'wrong-key');
+
+      expect(response.status).toBe(401);
+    });
+
+    it('should trigger blog sync', async () => {
+      const response = await post('/api/blog/sync').set('x-api-key', UPDATE_KEY);
 
       // In CI, RSS sync may fail, so accept 500 as well
       expect([200, 201, 202, 500]).toContain(response.status);
@@ -205,7 +220,7 @@ describe('Blog Endpoints', () => {
     }, 60000); // Longer timeout for sync operation
 
     it('should return sync result', async () => {
-      const response = await post('/api/blog/sync');
+      const response = await post('/api/blog/sync').set('x-api-key', UPDATE_KEY);
 
       // In CI, RSS sync may fail, so accept 500 as well
       expect([200, 201, 202, 500]).toContain(response.status);

@@ -313,20 +313,24 @@ function createMetricService({ model, metricPath, label, aggregation = 'sum' }) 
 
         return Object.values(groupedData).map(item => ({
           timestamp: item.timestamp,
-          value: item.sum / item.count  // Average across all chains
+          value: item.sum / item.count,  // Average across all chains
+          chainCount: item.count
         })).sort((a, b) => a.timestamp - b.timestamp);
       }
 
-      // Group by timestamp and sum across all chains.
+      // Group by timestamp and sum across all chains. chainCount is how many
+      // chains have a row for that day, so callers can say what the total covers.
       const groupedData = {};
       data.forEach(record => {
         if (!groupedData[record.timestamp]) {
           groupedData[record.timestamp] = {
             timestamp: record.timestamp,
-            value: 0
+            value: 0,
+            chainCount: 0
           };
         }
         groupedData[record.timestamp].value += record.value;
+        groupedData[record.timestamp].chainCount += 1;
       });
 
       return Object.values(groupedData).sort((a, b) => a.timestamp - b.timestamp);

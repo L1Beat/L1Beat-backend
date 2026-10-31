@@ -14,6 +14,7 @@ const Chain = require('./models/chain');
 const chainService = require('./services/chainService');
 const tpsRoutes = require('./routes/tpsRoutes');
 const tpsService = require('./services/tpsService');
+const rpcMetricsService = require('./services/rpcMetricsService');
 const TPS = require('./models/tps');
 const activeAddressesRoutes = require('./routes/activeAddressesRoutes');
 const activeAddressesService = require('./services/activeAddressesService');
@@ -27,6 +28,7 @@ const gasUsedService = require('./services/gasUsedService');
 const avgGasPriceRoutes = require('./routes/avgGasPriceRoutes');
 const avgGasPriceService = require('./services/avgGasPriceService');
 const feesPaidRoutes = require('./routes/feesPaidRoutes');
+const metricsRoutes = require('./routes/metricsRoutes');
 const feesPaidService = require('./services/feesPaidService');
 const teleporterRoutes = require('./routes/teleporterRoutes');
 const validatorRoutes = require('./routes/validatorRoutes');
@@ -468,6 +470,16 @@ const initializeDataUpdates = async () => {
     }
   });
 
+  // Daily metrics from chain RPCs for chains the metrics API doesn't cover.
+  // At :15 so it runs after the hourly metrics update has flagged those chains.
+  cron.schedule('15 * * * *', async () => {
+    try {
+      await rpcMetricsService.updateAllChains();
+    } catch (error) {
+      logger.error('[CRON RPC Metrics] Run failed:', error);
+    }
+  });
+
   // Weekly teleporter data updates once a day
   cron.schedule('0 0 * * *', async () => {
     try {
@@ -673,6 +685,7 @@ app.use('/api', txCountRoutes);
 app.use('/api', gasUsedRoutes);
 app.use('/api', avgGasPriceRoutes);
 app.use('/api', feesPaidRoutes);
+app.use('/api', metricsRoutes);
 app.use('/api', cumulativeTxCountRoutes);
 app.use('/api', teleporterRoutes);
 app.use('/api', validatorRoutes);
@@ -744,9 +757,11 @@ module.exports = app;
 // Only bind a port outside of tests (in tests supertest drives the app directly).
 const isTest = process.env.NODE_ENV === 'test';
 if (!isTest) {
-  const server = app.listen(PORT, () => {
+  // HOST defaults to 0.0.0.0; set HOST=127.0.0.1 when running behind a local reverse proxy.
+  const server = app.listen(PORT, config.server.host, () => {
     logger.info(`Server running on port ${PORT}`, {
       environment: config.env,
+      host: config.server.host,
       port: PORT,
       timestamp: new Date().toISOString()
     });

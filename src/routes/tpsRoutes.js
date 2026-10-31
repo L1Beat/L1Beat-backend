@@ -6,6 +6,7 @@ const TPS = require('../models/tps');
 const { validate, validators } = require('../utils/validationMiddleware');
 const logger = require('../utils/logger');
 const config = require('../config/config');
+const cacheManager = require('../utils/cacheManager');
 
 // Get TPS history for a chain
 router.get('/chains/:chainId/tps/history', validate(validators.getTpsHistory), async (req, res) => {
@@ -82,7 +83,7 @@ router.get('/tps/all/latest', async (req, res) => {
         subnetId: chain.subnetId,
         chainName: chain.chainName,
         tps: tps ? {
-          value: parseFloat(tps.value).toFixed(2),
+          value: Number(tps.value),
           timestamp: tps.timestamp
         } : null
       };
@@ -95,6 +96,59 @@ router.get('/tps/all/latest', async (req, res) => {
     });
   } catch (error) {
     logger.error('All TPS Error:', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+const ALL_HISTORY_TTL = 5 * 60 * 1000;
+
+// Get TPS history for all chains in a single call (e.g. for sparklines).
+// Each chain's history has the same points as /chains/:chainId/tps/history,
+// newest first.
+router.get('/tps/all/history', validate(validators.getAllTpsHistory), async (req, res) => {
+  try {
+    const days = req.query.days || 7;
+    const cacheKey = `tps:all:history:${days}`;
+    const cached = cacheManager.get(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
+    const chains = await Chain.find({
+      evmChainId: { $exists: true, $ne: null }
+    }).select('evmChainId chainId chainName subnetId').lean();
+
+    const cutoff = Math.floor(Date.now() / 1000) - (days * 24 * 60 * 60);
+    const records = await TPS.find({
+      chainId: { $in: chains.map(c => String(c.evmChainId)) },
+      timestamp: { $gte: cutoff }
+    })
+      .sort({ timestamp: -1 })
+      .select('-_id chainId timestamp value')
+      .lean();
+
+    const byChain = new Map();
+    for (const { chainId, timestamp, value } of records) {
+      if (!byChain.has(chainId)) byChain.set(chainId, []);
+      byChain.get(chainId).push({ timestamp, value: Number(value) });
+    }
+
+    const data = chains.map(chain => ({
+      evmChainId: chain.evmChainId,
+      subnetId: chain.subnetId,
+      chainId: chain.chainId,
+      chainName: chain.chainName,
+      history: byChain.get(String(chain.evmChainId)) || []
+    }));
+
+    const body = { success: true, days, count: data.length, data };
+    cacheManager.set(cacheKey, body, ALL_HISTORY_TTL);
+    res.json(body);
+  } catch (error) {
+    logger.error('All TPS History Error:', { error: error.message });
     res.status(500).json({
       success: false,
       error: error.message

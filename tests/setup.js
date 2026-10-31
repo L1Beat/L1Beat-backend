@@ -5,6 +5,7 @@
 // Set test environment before importing app
 process.env.NODE_ENV = 'test';
 process.env.PORT = '5002'; // Use different port for tests
+process.env.UPDATE_API_KEY = 'test-update-key';
 
 // Mock tpsService before importing app to prevent actual API calls
 // Return proper data structures that endpoints expect

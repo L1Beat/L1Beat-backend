@@ -4,6 +4,7 @@ const txCountService = require('../services/txCountService');
 const Chain = require('../models/chain');
 const TxCount = require('../models/txCount');
 const logger = require('../utils/logger');
+const allLatestHandler = require('../utils/allLatest');
 
 // Get tx count history for a chain
 router.get('/chains/:chainId/tx-count/history', async (req, res) => {
@@ -45,6 +46,9 @@ router.get('/chains/:chainId/tx-count/latest', async (req, res) => {
     });
   }
 });
+
+// Get the latest complete day's tx count for all chains in a single call.
+router.get('/tx-count/all/latest', allLatestHandler(TxCount, 'txCount'));
 
 // Get latest network-wide total tx count
 router.get('/tx-count/network/latest', async (req, res) => {

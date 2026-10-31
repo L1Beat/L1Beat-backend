@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const blogController = require('../controllers/blogController');
 const { validate, validators } = require('../utils/validationMiddleware');
+const { requireApiKey } = require('../utils/apiKeyMiddleware');
 const { param, query } = require("express-validator");
 
 /**
@@ -54,9 +55,10 @@ router.get('/blog/posts/:slug',
 /**
  * @route   POST /api/blog/sync
  * @desc    Manually trigger RSS sync with Substack
- * @access  Public (you might want to add auth later)
+ * @access  Private (requires x-api-key header matching UPDATE_API_KEY)
  */
 router.post('/blog/sync',
+    requireApiKey('update'),
     validate(validators.syncBlogPosts),
     blogController.syncPosts
 );

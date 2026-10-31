@@ -71,6 +71,17 @@ const validators = {
 
   getLatestTps: [validationRules.chainId],
 
+  getAllTpsHistory: [
+    query("days")
+      .optional()
+      .isInt({ min: 1, max: 30 })
+      .withMessage("Days must be an integer between 1 and 30")
+      .toInt(),
+  ],
+
+  // Combined metrics route
+  getMetricsHistory: [validationRules.chainId, validationRules.days],
+
   // Teleporter routes
   getDailyCrossChainMessageCount: [],
 
