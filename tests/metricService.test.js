@@ -14,7 +14,9 @@ const createMetricService = require('../src/services/metricService');
 /**
  * Build a fake Mongoose-like model backed by an in-memory row set.
  * Supports the chainable find().sort().lean() / findOne().sort().lean() shapes
- * the factory uses.
+ * the factory uses, and the network-history aggregate: rows grouped by
+ * timestamp into { _id, sum, chainCount }, ascending. (The real pipeline is
+ * checked against Mongo in networkHistory.test.js.)
  */
 function fakeModel(rows) {
   const chainable = (result) => ({
@@ -30,6 +32,16 @@ function fakeModel(rows) {
         result = rows.filter(r => r.timestamp === query.timestamp);
       }
       return chainable(result);
+    },
+    aggregate: async () => {
+      const groups = new Map();
+      for (const r of rows) {
+        const g = groups.get(r.timestamp) || { _id: r.timestamp, sum: 0, chainCount: 0 };
+        g.sum += r.value;
+        g.chainCount += 1;
+        groups.set(r.timestamp, g);
+      }
+      return [...groups.values()].sort((a, b) => a._id - b._id);
     },
     findOne: () => {
       const latest = rows.length
@@ -84,6 +96,18 @@ describe('createMetricService aggregation', () => {
       const latest = await svc.getNetworkLatest();
       expect(latest).toEqual({ timestamp: 200, value: 30, chainCount: 1 });
     });
+  });
+
+  it('caches network history per days value', async () => {
+    const model = fakeModel(rows);
+    const aggregate = jest.spyOn(model, 'aggregate');
+    const svc = createMetricService({ model, metricPath: 'x', label: 'X' });
+
+    const first = await svc.getNetworkHistory(720);
+    expect(await svc.getNetworkHistory(720)).toBe(first);
+    expect(aggregate).toHaveBeenCalledTimes(1);
+    await svc.getNetworkHistory(30);
+    expect(aggregate).toHaveBeenCalledTimes(2);
   });
 
   it('returns null from network latest when there is no data', async () => {

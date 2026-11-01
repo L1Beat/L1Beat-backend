@@ -285,55 +285,37 @@ function createMetricService({ model, metricPath, label, aggregation = 'sum' }) 
     }
   }
 
+  // Network history per `days`, kept briefly: the data changes hourly at most,
+  // and a long range (e.g. 720 days) reads tens of thousands of rows.
+  const NETWORK_HISTORY_TTL = 5 * 60 * 1000;
+  const networkHistoryCache = new Map();
+
   async function getNetworkHistory(days = 30) {
+    const cached = networkHistoryCache.get(days);
+    if (cached && cached.expires > Date.now()) {
+      return cached.data;
+    }
+
     try {
       const endTime = Math.floor(Date.now() / 1000);
       const startTime = endTime - (days * 24 * 60 * 60);
 
-      const data = await model.find({
-        timestamp: { $gte: startTime, $lte: endTime }
-      })
-        .sort({ timestamp: 1 })
-        .lean();
+      // Per-day sum across chains, computed in Mongo so only one row per day
+      // leaves the database. chainCount is how many chains have a row for that
+      // day, so callers can say what the total covers.
+      const rows = await model.aggregate([
+        { $match: { timestamp: { $gte: startTime, $lte: endTime } } },
+        { $group: { _id: '$timestamp', sum: { $sum: '$value' }, chainCount: { $sum: 1 } } },
+        { $sort: { _id: 1 } }
+      ]);
 
-      if (aggregation === 'avg') {
-        // Group by timestamp and calculate the average across all chains.
-        const groupedData = {};
-        data.forEach(record => {
-          if (!groupedData[record.timestamp]) {
-            groupedData[record.timestamp] = {
-              timestamp: record.timestamp,
-              sum: 0,
-              count: 0
-            };
-          }
-          groupedData[record.timestamp].sum += record.value;
-          groupedData[record.timestamp].count += 1;
-        });
-
-        return Object.values(groupedData).map(item => ({
-          timestamp: item.timestamp,
-          value: item.sum / item.count,  // Average across all chains
-          chainCount: item.count
-        })).sort((a, b) => a.timestamp - b.timestamp);
-      }
-
-      // Group by timestamp and sum across all chains. chainCount is how many
-      // chains have a row for that day, so callers can say what the total covers.
-      const groupedData = {};
-      data.forEach(record => {
-        if (!groupedData[record.timestamp]) {
-          groupedData[record.timestamp] = {
-            timestamp: record.timestamp,
-            value: 0,
-            chainCount: 0
-          };
-        }
-        groupedData[record.timestamp].value += record.value;
-        groupedData[record.timestamp].chainCount += 1;
-      });
-
-      return Object.values(groupedData).sort((a, b) => a.timestamp - b.timestamp);
+      const data = rows.map(({ _id, sum, chainCount }) => ({
+        timestamp: _id,
+        value: aggregation === 'avg' ? sum / chainCount : sum,
+        chainCount
+      }));
+      networkHistoryCache.set(days, { data, expires: Date.now() + NETWORK_HISTORY_TTL });
+      return data;
     } catch (error) {
       logger.error(`[${label}] Error fetching network history:`, error);
       throw error;
