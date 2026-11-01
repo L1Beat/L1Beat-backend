@@ -15,6 +15,7 @@ const chainService = require('./services/chainService');
 const tpsRoutes = require('./routes/tpsRoutes');
 const tpsService = require('./services/tpsService');
 const rpcMetricsService = require('./services/rpcMetricsService');
+const treasuryService = require('./services/treasuryService');
 const TPS = require('./models/tps');
 const activeAddressesRoutes = require('./routes/activeAddressesRoutes');
 const activeAddressesService = require('./services/activeAddressesService');
@@ -29,6 +30,7 @@ const avgGasPriceRoutes = require('./routes/avgGasPriceRoutes');
 const avgGasPriceService = require('./services/avgGasPriceService');
 const feesPaidRoutes = require('./routes/feesPaidRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
+const treasuryRoutes = require('./routes/treasuryRoutes');
 const feesPaidService = require('./services/feesPaidService');
 const teleporterRoutes = require('./routes/teleporterRoutes');
 const validatorRoutes = require('./routes/validatorRoutes');
@@ -480,6 +482,15 @@ const initializeDataUpdates = async () => {
     }
   });
 
+  // AVAX treasuries and ETFs every 6 hours; ETFs publish holdings daily.
+  cron.schedule('20 */6 * * *', async () => {
+    try {
+      await treasuryService.updateAll();
+    } catch (error) {
+      logger.error('[CRON Treasuries] Update failed:', error);
+    }
+  });
+
   // Weekly teleporter data updates once a day
   cron.schedule('0 0 * * *', async () => {
     try {
@@ -536,6 +547,10 @@ connectDB().then(async () => {
 
       // Then continue with normal initialization
       initializeDataUpdates();
+
+      // Treasuries don't depend on the chain data; refresh them right away so
+      // a restart doesn't leave the day without a snapshot.
+      treasuryService.updateAll().catch(error => logger.error('[Treasuries] Startup update failed:', error));
     } catch (error) {
       logger.error('Critical startup error:', error.message);
       process.exit(1);
@@ -686,6 +701,7 @@ app.use('/api', gasUsedRoutes);
 app.use('/api', avgGasPriceRoutes);
 app.use('/api', feesPaidRoutes);
 app.use('/api', metricsRoutes);
+app.use('/api', treasuryRoutes);
 app.use('/api', cumulativeTxCountRoutes);
 app.use('/api', teleporterRoutes);
 app.use('/api', validatorRoutes);

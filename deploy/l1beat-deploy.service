@@ -1,0 +1,16 @@
+# One-shot deploy of origin/main; triggered every 5 minutes by l1beat-deploy.timer.
+# Install: sudo cp deploy/l1beat-deploy.service deploy/l1beat-deploy.timer /etc/systemd/system/
+# The restart needs deploy/l1beat-deploy.sudoers in /etc/sudoers.d/.
+[Unit]
+Description=L1Beat backend auto-deploy from main
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=selim
+Group=selim
+ExecStart=/home/selim/l1beat-backend/deploy/auto-deploy.sh
+# Shares the box with the Icicle services: low CPU and IO priority (npm ci).
+Nice=15
+IOSchedulingClass=idle

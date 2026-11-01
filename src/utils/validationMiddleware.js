@@ -82,6 +82,9 @@ const validators = {
   // Combined metrics route
   getMetricsHistory: [validationRules.chainId, validationRules.days],
 
+  // Treasury routes
+  getTreasuriesHistory: [validationRules.days],
+
   // Teleporter routes
   getDailyCrossChainMessageCount: [],
 
