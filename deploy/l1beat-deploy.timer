@@ -1,0 +1,12 @@
+# Checks main for a new commit every 5 minutes.
+# Enable: sudo systemctl enable --now l1beat-deploy.timer
+# Logs:   journalctl -u l1beat-deploy
+[Unit]
+Description=L1Beat backend auto-deploy check
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

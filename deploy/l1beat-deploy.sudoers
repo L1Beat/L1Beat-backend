@@ -1,0 +1,4 @@
+# Lets deploy/auto-deploy.sh restart the backend, and nothing else.
+# Install: sudo install -m 440 deploy/l1beat-deploy.sudoers /etc/sudoers.d/l1beat-deploy
+# Check:   sudo visudo -cf /etc/sudoers.d/l1beat-deploy
+selim ALL=(root) NOPASSWD: /usr/bin/systemctl restart l1beat-backend
