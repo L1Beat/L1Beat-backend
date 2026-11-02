@@ -6,7 +6,7 @@
  */
 
 jest.mock('axios', () => ({ post: jest.fn() }));
-jest.mock('../src/models/txCount', () => ({ bulkWrite: jest.fn() }));
+jest.mock('../src/models/txCount', () => ({ bulkWrite: jest.fn(), findOne: jest.fn() }));
 jest.mock('../src/models/gasUsed', () => ({ bulkWrite: jest.fn() }));
 jest.mock('../src/models/maxTps', () => ({ bulkWrite: jest.fn() }));
 jest.mock('../src/models/feesPaid', () => ({ bulkWrite: jest.fn() }));
@@ -32,6 +32,7 @@ const NOW = TODAY + 6 * 60 * 60;
 const URL = 'https://rpc.example';
 const GWEI = 1e9;
 const STATE_VERSION = 3;
+const BACKFILL_DAYS = 365;
 
 // Fake chain: block n has timestamp blockTimes[n] and n % 3 transactions, each
 // using 21000 gas at 25 gwei. `receipts` is which receipt method the RPC has.
@@ -90,8 +91,11 @@ const httpError = (status, headers = {}) => () =>
   Object.assign(new Error(`Request failed with status code ${status}`), { response: { status, headers } });
 const batchLengths = () => axios.post.mock.calls.map(([, body]) => body.length);
 
+// A saved state; set up for the current backfill depth unless `state` says otherwise.
 function stubState(state) {
-  RpcTxCountState.findOne.mockReturnValue({ lean: async () => state && { version: STATE_VERSION, ...state } });
+  RpcTxCountState.findOne.mockReturnValue({
+    lean: async () => state && { version: STATE_VERSION, backfillDays: BACKFILL_DAYS, ...state }
+  });
 }
 
 // A day's running totals as kept in the state.
@@ -118,7 +122,7 @@ describe('rpcMetricsService.updateChain', () => {
   it('backfills from the first block of the backfill window and counts each day', async () => {
     // Blocks 0-9 before the window, 10-19 two days ago, 20-24 today.
     const times = [];
-    for (let n = 0; n < 10; n++) times.push(TODAY - 40 * DAY + n);
+    for (let n = 0; n < 10; n++) times.push(TODAY - 400 * DAY + n);
     for (let n = 10; n < 20; n++) times.push(TODAY - 2 * DAY + n);
     for (let n = 20; n < 25; n++) times.push(TODAY + n);
     fakeChain(times);
@@ -133,8 +137,10 @@ describe('rpcMetricsService.updateChain', () => {
     expect(days[TODAY - DAY].value).toBe(0);
     // Today's running count, like the metrics API's in-progress bucket.
     expect(days[TODAY].value).toBe(txOf(20, 24));
-    // Days in the window before the first block are 0 as well.
+    // Quiet days in the window are 0 as well, back to its first day.
     expect(days[TODAY - 30 * DAY].value).toBe(0);
+    expect(days[TODAY - BACKFILL_DAYS * DAY].value).toBe(0);
+    expect(days[TODAY - (BACKFILL_DAYS + 1) * DAY]).toBeUndefined();
   });
 
   it.each(['block', 'tx'])('derives gas used, max TPS, fees and average gas price (%s receipts)', async (receipts) => {
@@ -194,7 +200,7 @@ describe('rpcMetricsService.updateChain', () => {
 
   it('restarts the backfill for a state saved by an older version', async () => {
     const times = [];
-    for (let n = 0; n < 5; n++) times.push(TODAY - 40 * DAY + n);
+    for (let n = 0; n < 5; n++) times.push(TODAY - 400 * DAY + n);
     for (let n = 5; n < 10; n++) times.push(TODAY - DAY + n);
     fakeChain(times);
     RpcTxCountState.findOne.mockReturnValue({ lean: async () => ({ lastBlock: 8, dayTimestamp: TODAY - DAY, dayCount: 7 }) });
@@ -307,8 +313,54 @@ describe('rpcMetricsService.updateChain', () => {
     days = written(TxCount);
     expect(days[TODAY - 3 * DAY].value).toBe(txOf(0, 49));
     expect(written(MaxTps)[TODAY - 3 * DAY].value).toBe(2);
-    expect(days[TODAY - 30 * DAY].value).toBe(0);
+    // Block 0 is three days ago: older days get no rows, not 0.
+    expect(days[TODAY - 4 * DAY]).toBeUndefined();
     expect(RpcTxCountState.updateOne.mock.calls.at(-1)[1].$set.backfill).toBeNull();
+  });
+
+  it('lowers a running backfill\'s floor for a state set up for 30 days', async () => {
+    const times = [];
+    for (let n = 0; n < 10; n++) times.push(TODAY - 60 * DAY + n);
+    for (let n = 10; n < 20; n++) times.push(TODAY - 31 * DAY + n);
+    for (let n = 20; n < 25; n++) times.push(TODAY + n);
+    fakeChain(times);
+    stubState({
+      backfillDays: undefined,
+      lastBlock: 24,
+      lastTimestamp: TODAY + 24,
+      dayTimestamp: TODAY,
+      day: totals(),
+      backfill: { day: TODAY - 30 * DAY, floor: TODAY - 30 * DAY, endBlock: 19 }
+    });
+
+    await updateChain('1', URL, { now: NOW });
+
+    const days = written(TxCount);
+    expect(days[TODAY - 31 * DAY].value).toBe(txOf(10, 19));
+    expect(days[TODAY - 60 * DAY].value).toBe(txOf(0, 9));
+    expect(days[TODAY - 61 * DAY]).toBeUndefined();
+    expect(RpcTxCountState.updateOne.mock.calls.at(-1)[1].$set).toMatchObject({ backfill: null, backfillDays: BACKFILL_DAYS });
+  });
+
+  it('restarts a finished 30-day backfill below the oldest stored day', async () => {
+    const times = [];
+    for (let n = 0; n < 10; n++) times.push(TODAY - 45 * DAY + n);
+    for (let n = 10; n < 20; n++) times.push(TODAY - 30 * DAY + n);
+    for (let n = 20; n < 25; n++) times.push(TODAY + n);
+    fakeChain(times);
+    TxCount.findOne.mockReturnValue({
+      sort: () => ({ select: () => ({ lean: async () => ({ timestamp: TODAY - 30 * DAY }) }) })
+    });
+    stubState({ backfillDays: undefined, lastBlock: 24, lastTimestamp: TODAY + 24, dayTimestamp: TODAY, day: totals(), backfill: null });
+
+    await updateChain('1', URL, { now: NOW });
+
+    const days = written(TxCount);
+    // The stored days are not recounted.
+    expect(days[TODAY - 30 * DAY]).toBeUndefined();
+    expect(days[TODAY - 31 * DAY].value).toBe(0);
+    expect(days[TODAY - 45 * DAY].value).toBe(txOf(0, 9));
+    expect(days[TODAY - 46 * DAY]).toBeUndefined();
   });
 
   it('converts an oldest-first state, keeping the days it already wrote', async () => {

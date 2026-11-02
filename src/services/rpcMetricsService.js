@@ -27,14 +27,18 @@ const tpsService = require('./tpsService');
 // large share of fees on these chains.
 //
 // Newest days first: live counting starts at yesterday and keeps up with the
-// head; leftover time in a run counts older days back to BACKFILL_DAYS. Progress
+// head; leftover time in a run counts older days back to BACKFILL_DAYS, or to
+// the chain's first block if it is younger: days before it get no rows. Progress
 // is kept in RpcTxCountState and a UTC day is written once all of its blocks
 // are counted.
 // A failed RPC stops that chain's run at the last complete batch, so a day is
 // never written from a partial count: it stays missing (null) instead of 0.
 
 const DAY_SECONDS = 24 * 60 * 60;
-const BACKFILL_DAYS = 30;
+const BACKFILL_DAYS = 365;
+// The depth states saved before `backfillDays` was recorded were set up for.
+// A state set up for less than BACKFILL_DAYS is extended once.
+const LEGACY_BACKFILL_DAYS = 30;
 const BLOCKS_PER_STEP = 100;
 // Calls per JSON-RPC batch. Halved for an RPC that rejects a batch as too
 // large (subnets.avax.network fails above ~40), down to MIN_BATCH_SIZE, and
@@ -44,7 +48,7 @@ const BATCH_SIZE = 100;
 const MIN_BATCH_SIZE = 5;
 const GROW_AFTER = 50;
 // Third-party RPCs: few requests at a time, and a cap per run so a busy chain's
-// 30-day backfill spreads over several hourly runs instead of one long one.
+// backfill spreads over many hourly runs instead of one long one.
 const MAX_BLOCKS_PER_RUN = 250000;
 // A run stops by this deadline so it ends before the next hourly run starts;
 // chains pick up where they stopped. Progress is saved at least this often, so
@@ -307,7 +311,7 @@ async function blockTimestamp(url, number) {
  * Count one chain's blocks and store the completed days, newest first: live
  * counting starts at yesterday's first block and keeps up with the head; time
  * left in a run goes to older days, one whole day at a time, back to
- * BACKFILL_DAYS ago.
+ * BACKFILL_DAYS ago or the chain's first block.
  * @param {string} chainId
  * @param {string} rpcUrl
  * @param {{ maxBlocks?: number, now?: number, deadline?: number }} [options]
@@ -326,6 +330,7 @@ async function updateChain(chainId, rpcUrl, {
   // feeSource: 'block' or 'tx' (how receipts are fetched), 'none' if neither
   // works; unset until the first block with transactions.
   let { lastBlock, lastTimestamp, dayTimestamp, day, feeSource, backfill = null } = state;
+  let backfillDays = state.backfillDays ?? LEGACY_BACKFILL_DAYS;
   let blocksCounted = 0;
   let daysWritten = 0;
   const pending = new Map(); // day timestamp -> day totals
@@ -374,6 +379,7 @@ async function updateChain(chainId, rpcUrl, {
           dayTimestamp,
           day,
           backfill,
+          backfillDays,
           feeSource,
           lastError,
           lastRunAt: new Date()
@@ -433,6 +439,23 @@ async function updateChain(chainId, rpcUrl, {
       backfill = yesterday - DAY_SECONDS >= floor
         ? { day: yesterday - DAY_SECONDS, floor, endBlock: start - 1 }
         : null;
+      backfillDays = BACKFILL_DAYS;
+    }
+
+    // Set up for a shallower backfill: lower a running backfill's floor, or
+    // start a new one below the oldest day the chain has rows for.
+    if (backfillDays < BACKFILL_DAYS) {
+      const floor = today - BACKFILL_DAYS * DAY_SECONDS;
+      if (backfill) {
+        backfill = { ...backfill, floor: Math.min(backfill.floor, floor) };
+      } else {
+        const oldest = await TxCount.findOne({ chainId }).sort({ timestamp: 1 }).select('timestamp').lean();
+        const endBlock = oldest && oldest.timestamp - DAY_SECONDS >= floor
+          ? (await findFirstBlockAtOrAfter(rpcUrl, oldest.timestamp, head)) - 1
+          : 0;
+        backfill = endBlock > 0 ? { day: oldest.timestamp - DAY_SECONDS, floor, endBlock } : null;
+      }
+      backfillDays = BACKFILL_DAYS;
     }
 
     // Live: from the last counted block towards the head.
@@ -483,7 +506,8 @@ async function updateChain(chainId, rpcUrl, {
       if (backfill.nextBlock > backfill.endBlock) {
         pending.set(backfill.day, backfill.totals);
         const older = backfill.day - DAY_SECONDS;
-        backfill = older >= backfill.floor
+        // At the chain's first blocks (block 0 is genesis) there is nothing older.
+        backfill = older >= backfill.floor && backfill.startBlock > 1
           ? { day: older, floor: backfill.floor, endBlock: backfill.startBlock - 1 }
           : null;
         await flush();
