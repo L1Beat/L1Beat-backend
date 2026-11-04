@@ -79,6 +79,7 @@ const config = {
         : [
             "https://l1beat.io",
             "https://www.l1beat.io",
+            "https://dev.l1beat.io",
             "https://layer1.wtf",
             "https://www.layer1.wtf",
             process.env.FRONTEND_URL,
