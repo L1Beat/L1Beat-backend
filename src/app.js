@@ -112,9 +112,10 @@ app.use(cors({
       return callback(null, true);
     }
     
-    // Log blocked origins for debugging
+    // Log blocked origins for debugging. Answer without CORS headers so the
+    // browser blocks the response, instead of failing the request with a 500.
     logger.warn('CORS blocked origin:', { origin, allowedOrigins: corsOrigins });
-    callback(new Error('Not allowed by CORS'));
+    callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
