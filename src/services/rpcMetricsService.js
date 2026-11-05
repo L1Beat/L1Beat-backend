@@ -5,6 +5,8 @@ const GasUsed = require('../models/gasUsed');
 const MaxTps = require('../models/maxTps');
 const FeesPaid = require('../models/feesPaid');
 const AvgGasPrice = require('../models/avgGasPrice');
+const ActiveAddresses = require('../models/activeAddresses');
+const RpcDayAddresses = require('../models/rpcDayAddresses');
 const RpcTxCountState = require('../models/rpcTxCountState');
 const Chain = require('../models/chain');
 const logger = require('../utils/logger');
@@ -21,7 +23,12 @@ const tpsService = require('./tpsService');
 //                its parent block (at least 1)
 //   feesPaid     native token: sum of gasUsed * effectiveGasPrice
 //   avgGasPrice  gwei: mean effectiveGasPrice per transaction
-// Fees and gas price come from receipts: eth_getBlockReceipts where the RPC
+//   activeAddresses  distinct addresses in the from and to of a transaction
+//                or of an ERC20/ERC721/ERC1155 transfer log (the metrics API's
+//                stated definition). The metrics API also counts addresses
+//                only traces show (internal calls), which public RPCs don't
+//                serve, so these counts run lower than its numbers.
+// Fees, gas price and addresses come from receipts: eth_getBlockReceipts where the RPC
 // has it, else one eth_getTransactionReceipt per transaction (Avalanche's
 // public subnets.avax.network RPCs). Base fee * gas is not used: tips are a
 // large share of fees on these chains.
@@ -30,7 +37,8 @@ const tpsService = require('./tpsService');
 // head; leftover time in a run counts older days back to BACKFILL_DAYS, or to
 // the chain's first block if it is younger: days before it get no rows. Progress
 // is kept in RpcTxCountState and a UTC day is written once all of its blocks
-// are counted.
+// are counted. A day's addresses seen so far are kept in RpcDayAddresses, so
+// a day counted across several runs still counts each address once.
 // A failed RPC stops that chain's run at the last complete batch, so a day is
 // never written from a partial count: it stays missing (null) instead of 0.
 
@@ -62,10 +70,18 @@ const RETRIES = 3;
 // up to this many times per batch, instead of giving up on the chain.
 const RATE_LIMIT_RETRIES = 8;
 const MAX_BACKOFF_MS = 60 * 1000;
-// Bump when the counted metrics change: older states restart the backfill so
-// every day gets the new metrics. Version 2 (oldest day first) states are
-// converted, keeping the days they wrote.
-const STATE_VERSION = 3;
+// Bump when the counted metrics change: older states restart counting at
+// yesterday and backfill again, so every day gets the new metrics. Version 4
+// added activeAddresses.
+const STATE_VERSION = 4;
+// Token transfer events whose from and to count as active addresses:
+// ERC20/ERC721 Transfer (from, to in topics 1-2), ERC1155 TransferSingle and
+// TransferBatch (from, to in topics 2-3; topic 1 is the operator).
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const TRANSFER_SINGLE_TOPIC = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
+const TRANSFER_BATCH_TOPIC = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb';
+// Addresses per RpcDayAddresses row (20 bytes each, well under Mongo's 16 MB).
+const ADDRESSES_PER_ROW = 100000;
 const WEI_PER_GWEI = 1e9;
 const WEI_PER_TOKEN = 1e18;
 
@@ -208,28 +224,54 @@ async function getBlocks(url, numbers) {
   });
 }
 
+// An address as kept in address sets: lowercase hex without 0x. A topic holds
+// an address in its last 20 bytes.
+const addressKey = (hex) => hex.slice(-40).toLowerCase();
+
+// Add the addresses a transaction makes active: its from and to, and the from
+// and to of each token transfer it logs.
+function addReceiptAddresses(receipt, addresses) {
+  addresses.add(addressKey(receipt.from));
+  if (receipt.to) addresses.add(addressKey(receipt.to));
+  for (const { topics = [] } of receipt.logs || []) {
+    const event = topics[0] && topics[0].toLowerCase();
+    if (event === TRANSFER_TOPIC && topics.length >= 3) {
+      addresses.add(addressKey(topics[1]));
+      addresses.add(addressKey(topics[2]));
+    } else if ((event === TRANSFER_SINGLE_TOPIC || event === TRANSFER_BATCH_TOPIC) && topics.length >= 4) {
+      addresses.add(addressKey(topics[2]));
+      addresses.add(addressKey(topics[3]));
+    }
+  }
+}
+
 function sumReceipts(block, receipts) {
   if (!Array.isArray(receipts) || receipts.length !== block.txCount) {
     throw new Error(`receipts for block ${block.number} don't match its transactions`);
   }
   let feesWei = 0n;
   let priceSumWei = 0n;
+  const addresses = new Set();
   for (const receipt of receipts) {
     if (!receipt || !receipt.effectiveGasPrice) {
       throw new Error(`receipt in block ${block.number} has no effectiveGasPrice`);
     }
+    if (!receipt.from) {
+      throw new Error(`receipt in block ${block.number} has no from`);
+    }
     const price = BigInt(receipt.effectiveGasPrice);
     feesWei += BigInt(receipt.gasUsed) * price;
     priceSumWei += price;
+    addReceiptAddresses(receipt, addresses);
   }
-  return { feesWei, priceSumWei, txs: receipts.length };
+  return { feesWei, priceSumWei, txs: receipts.length, addresses };
 }
 
 /**
- * Fee totals for each block with transactions. `source` is how to get the
+ * Fee totals and active addresses for each block with transactions. `source` is how to get the
  * receipts: 'block' (eth_getBlockReceipts) or 'tx' (eth_getTransactionReceipt).
  * Returns null if the RPC doesn't support that method.
- * @returns {Promise<Map<number, { feesWei: bigint, priceSumWei: bigint, txs: number }>|null>}
+ * @returns {Promise<Map<number, { feesWei: bigint, priceSumWei: bigint, txs: number, addresses: Set<string> }>|null>}
  */
 async function getBlockFees(url, blocks, source) {
   const withTxs = blocks.filter(b => b.txCount > 0);
@@ -272,15 +314,18 @@ async function findFirstBlockAtOrAfter(url, ts, head) {
   return lo;
 }
 
-// The metric rows for one counted day.
-function dayRows(day) {
+// The metric rows for one counted day; `activeAddresses` is how many distinct
+// addresses its blocks had.
+function dayRows(day, activeAddresses) {
   const rows = [
     [TxCount, day.tx],
     [GasUsed, day.gas],
     [MaxTps, day.maxTps]
   ];
+  // Fees and addresses both come from receipts: none without them.
   if (day.withFees) {
     rows.push([FeesPaid, day.fees]);
+    rows.push([ActiveAddresses, activeAddresses]);
     // No average for a day without transactions (not a 0 gas price).
     if (day.priceTxs > 0) {
       rows.push([AvgGasPrice, day.priceSum / day.priceTxs]);
@@ -302,6 +347,9 @@ function addBlock(totals, block, prevTimestamp, fees) {
     totals.priceTxs += fees.txs;
   }
 }
+
+// A Buffer field as read with lean(): a BSON Binary.
+const bytesOf = (value) => (Buffer.isBuffer(value) ? value : Buffer.from(value.buffer.subarray(0, value.position)));
 
 async function blockTimestamp(url, number) {
   return number >= 0 ? (await getBlocks(url, [number]))[0].timestamp : null;
@@ -326,7 +374,9 @@ async function updateChain(chainId, rpcUrl, {
   const today = dayStart(now);
   const yesterday = today - DAY_SECONDS;
   const saved = (await RpcTxCountState.findOne({ chainId }).lean()) || {};
-  const state = saved.version === STATE_VERSION || saved.version === 2 ? saved : {};
+  // A state from an older version, or one whose first run never found
+  // yesterday's first block, starts over.
+  const state = saved.version === STATE_VERSION && saved.lastBlock != null ? saved : {};
   // feeSource: 'block' or 'tx' (how receipts are fetched), 'none' if neither
   // works; unset until the first block with transactions.
   let { lastBlock, lastTimestamp, dayTimestamp, day, feeSource, backfill = null } = state;
@@ -336,6 +386,35 @@ async function updateChain(chainId, rpcUrl, {
   const pending = new Map(); // day timestamp -> day totals
   let lastSave = Date.now();
   const hasTime = () => Date.now() < deadline && blocksCounted < maxBlocks;
+  // Active addresses: for each day being counted, the addresses seen so far
+  // (see addressKey), and those not yet saved to RpcDayAddresses.
+  const addressSets = new Map(); // day timestamp -> Set
+  const unsavedAddresses = new Map(); // day timestamp -> array
+  const addAddresses = (timestamp, fees) => {
+    if (!fees) return;
+    if (!addressSets.has(timestamp)) addressSets.set(timestamp, new Set());
+    const seen = addressSets.get(timestamp);
+    for (const address of fees.addresses) {
+      if (seen.has(address)) continue;
+      seen.add(address);
+      if (!unsavedAddresses.has(timestamp)) unsavedAddresses.set(timestamp, []);
+      unsavedAddresses.get(timestamp).push(address);
+    }
+  };
+  const loadAddresses = async (timestamp) => {
+    const seen = new Set();
+    for (const row of await RpcDayAddresses.find({ chainId, day: timestamp }).lean()) {
+      const bytes = bytesOf(row.addresses);
+      for (let i = 0; i + 20 <= bytes.length; i += 20) {
+        seen.add(bytes.toString('hex', i, i + 20));
+      }
+    }
+    addressSets.set(timestamp, seen);
+  };
+  // Days with some blocks counted but not all: the live day, and the
+  // backfill's day once it has started.
+  const openDays = () => [dayTimestamp, backfill && backfill.nextBlock != null ? backfill.day : null]
+    .filter(timestamp => timestamp != null);
 
   // Finish the current day (and any days without blocks before `nextDay`).
   const closeDaysBefore = (nextDay) => {
@@ -348,10 +427,27 @@ async function updateChain(chainId, rpcUrl, {
   };
 
   const flush = async (lastError = null) => {
+    // Addresses of days still open go first: the state saved below counts
+    // their blocks as done. Days written now don't need theirs kept.
+    const open = openDays();
+    const rows = [];
+    for (const [timestamp, addresses] of unsavedAddresses) {
+      if (!open.includes(timestamp)) continue;
+      for (let i = 0; i < addresses.length; i += ADDRESSES_PER_ROW) {
+        const chunk = addresses.slice(i, i + ADDRESSES_PER_ROW);
+        rows.push({ chainId, day: timestamp, addresses: Buffer.from(chunk.join(''), 'hex') });
+      }
+    }
+    if (rows.length > 0) {
+      await RpcDayAddresses.insertMany(rows, { ordered: false });
+    }
+    unsavedAddresses.clear();
+
     if (pending.size > 0) {
       const opsByModel = new Map();
       for (const [timestamp, totals] of pending) {
-        for (const [model, value] of dayRows(totals)) {
+        const activeAddresses = addressSets.has(timestamp) ? addressSets.get(timestamp).size : 0;
+        for (const [model, value] of dayRows(totals, activeAddresses)) {
           if (!opsByModel.has(model)) opsByModel.set(model, []);
           opsByModel.get(model).push({
             updateOne: {
@@ -387,6 +483,11 @@ async function updateChain(chainId, rpcUrl, {
       },
       { upsert: true }
     );
+    // Written days no longer need their addresses.
+    for (const timestamp of addressSets.keys()) {
+      if (!open.includes(timestamp)) addressSets.delete(timestamp);
+    }
+    await RpcDayAddresses.deleteMany({ chainId, day: { $nin: open } });
   };
   const saveIfDue = async () => {
     if (pending.size > 0 || Date.now() - lastSave >= SAVE_INTERVAL_MS) {
@@ -426,11 +527,11 @@ async function updateChain(chainId, rpcUrl, {
   try {
     const head = await getHead(rpcUrl);
 
-    // A new chain, or a state from before newest-first counting: start live
-    // counting at yesterday. A version-2 state that is behind keeps the days
-    // it wrote; the backfill redoes its unfinished day and the ones after it.
-    if (state.version !== STATE_VERSION && !(state.version === 2 && dayTimestamp >= yesterday)) {
-      const floor = state.version === 2 ? dayTimestamp : today - BACKFILL_DAYS * DAY_SECONDS;
+    // A new chain, or a state from an older version: start live counting at
+    // yesterday, and backfill from the day before.
+    if (state.version !== STATE_VERSION) {
+      const floor = today - BACKFILL_DAYS * DAY_SECONDS;
+      await RpcDayAddresses.deleteMany({ chainId });
       const start = await findFirstBlockAtOrAfter(rpcUrl, yesterday, head);
       lastBlock = start - 1;
       lastTimestamp = await blockTimestamp(rpcUrl, lastBlock);
@@ -440,6 +541,11 @@ async function updateChain(chainId, rpcUrl, {
         ? { day: yesterday - DAY_SECONDS, floor, endBlock: start - 1 }
         : null;
       backfillDays = BACKFILL_DAYS;
+    } else {
+      // Resuming: the addresses already seen on the days left half counted.
+      for (const timestamp of openDays()) {
+        await loadAddresses(timestamp);
+      }
     }
 
     // Set up for a shallower backfill: lower a running backfill's floor, or
@@ -466,6 +572,7 @@ async function updateChain(chainId, rpcUrl, {
           closeDaysBefore(blockDay);
         }
         addBlock(day, block, lastTimestamp, fees);
+        addAddresses(dayTimestamp, fees);
         lastBlock = block.number;
         lastTimestamp = block.timestamp;
       }
@@ -498,6 +605,7 @@ async function updateChain(chainId, rpcUrl, {
       while (backfill.nextBlock <= backfill.endBlock && hasTime()) {
         for (const [block, fees] of await nextStep(backfill.nextBlock, backfill.endBlock)) {
           addBlock(backfill.totals, block, backfill.prevTimestamp, fees);
+          addAddresses(backfill.day, fees);
           backfill.nextBlock = block.number + 1;
           backfill.prevTimestamp = block.timestamp;
         }

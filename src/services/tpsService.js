@@ -5,6 +5,8 @@ const GasUsed = require('../models/gasUsed');
 const MaxTps = require('../models/maxTps');
 const FeesPaid = require('../models/feesPaid');
 const AvgGasPrice = require('../models/avgGasPrice');
+const ActiveAddresses = require('../models/activeAddresses');
+const RpcDayAddresses = require('../models/rpcDayAddresses');
 const RpcTxCountState = require('../models/rpcTxCountState');
 const Chain = require('../models/chain');
 const config = require('../config/config');
@@ -170,9 +172,12 @@ class TpsService {
     if (txCountResult && txCountResult.success && txCountResult.recordsProcessed > 0) {
       const removed = await RpcTxCountState.deleteOne({ chainId: id });
       if (removed.deletedCount > 0) {
-        await Promise.all([TxCount, GasUsed, MaxTps, FeesPaid, AvgGasPrice].map(model =>
-          model.updateMany({ chainId: id, source: 'rpc' }, { $unset: { source: 1 } })
-        ));
+        await Promise.all([
+          ...[TxCount, GasUsed, MaxTps, FeesPaid, AvgGasPrice, ActiveAddresses].map(model =>
+            model.updateMany({ chainId: id, source: 'rpc' }, { $unset: { source: 1 } })
+          ),
+          RpcDayAddresses.deleteMany({ chainId: id })
+        ]);
       }
     }
 
