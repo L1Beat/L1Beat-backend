@@ -362,14 +362,16 @@ async function blockTimestamp(url, number) {
  * BACKFILL_DAYS ago or the chain's first block.
  * @param {string} chainId
  * @param {string} rpcUrl
- * @param {{ maxBlocks?: number, now?: number, deadline?: number }} [options]
+ * @param {{ maxBlocks?: number, now?: number, deadline?: number, liveOnly?: boolean }} [options]
  *   maxBlocks: blocks counted per run; deadline: epoch ms after which the
- *   chain stops at the next batch
+ *   chain stops at the next batch; liveOnly: stop at the head, leaving older
+ *   days for a later call
  */
 async function updateChain(chainId, rpcUrl, {
   maxBlocks = MAX_BLOCKS_PER_RUN,
   now = Math.floor(Date.now() / 1000),
-  deadline = Date.now() + RUN_BUDGET_MS
+  deadline = Date.now() + RUN_BUDGET_MS,
+  liveOnly = false
 } = {}) {
   const today = dayStart(now);
   const yesterday = today - DAY_SECONDS;
@@ -591,7 +593,7 @@ async function updateChain(chainId, rpcUrl, {
     }
 
     // Older days, newest first, each written once all its blocks are counted.
-    while (caughtUp && backfill && hasTime()) {
+    while (caughtUp && backfill && !liveOnly && hasTime()) {
       if (backfill.nextBlock == null) {
         const first = await findFirstBlockAtOrAfter(rpcUrl, backfill.day, backfill.endBlock);
         backfill = {
@@ -630,7 +632,7 @@ async function updateChain(chainId, rpcUrl, {
       caughtUp,
       backfillDay: backfill ? new Date(backfill.day * 1000).toISOString().slice(0, 10) : 'done'
     });
-    return { success: true, chainId, blocksCounted, daysWritten, caughtUp };
+    return { success: true, chainId, blocksCounted, daysWritten, caughtUp, backfilling: backfill != null };
   } catch (error) {
     logger.warn(`[RPC Metrics] Chain ${chainId} stopped after ${blocksCounted} blocks: ${error.message}`);
     try {
@@ -648,6 +650,10 @@ async function updateChain(chainId, rpcUrl, {
  * RpcTxCountState row, created by tpsService.syncDerivedTps). Skips if a
  * previous run is still going. Chains run least recently updated first, so
  * ones a run's deadline cut off go first next time.
+ *
+ * Two passes share the run's deadline: first every chain catches up to its
+ * head, then chains with older days left backfill. A long backfill can then
+ * never hold up another chain's latest days.
  */
 async function updateAllChains(options = {}) {
   if (running) {
@@ -666,8 +672,11 @@ async function updateAllChains(options = {}) {
     );
     const chains = states.map(s => chainsById.get(s.chainId)).filter(Boolean);
 
+    // p-limit starts queued calls in order, and every live call is queued
+    // before any backfill call, so backfills only take slots no live call
+    // is waiting for.
     const limit = pLimit(CHAIN_CONCURRENCY);
-    const results = await Promise.all(chains.map(chain => limit(async () => {
+    const update = (chain, liveOnly) => limit(async () => {
       const chainId = String(chain.evmChainId);
       if (Date.now() >= deadline) {
         return { success: false, chainId, error: 'run deadline reached' };
@@ -676,13 +685,22 @@ async function updateAllChains(options = {}) {
       if (!rpcUrl || !/^https?:\/\//.test(rpcUrl)) {
         return { success: false, chainId, error: 'no RPC URL' };
       }
-      return updateChain(chainId, rpcUrl, { ...chainOptions, deadline });
+      return updateChain(chainId, rpcUrl, { ...chainOptions, deadline, liveOnly });
+    });
+    const backfills = [];
+    const results = await Promise.all(chains.map(chain => update(chain, true).then(result => {
+      if (result.success && result.caughtUp && result.backfilling) {
+        backfills.push(update(chain, false));
+      }
+      return result;
     })));
+    const backfillResults = await Promise.all(backfills);
 
     const succeeded = results.filter(r => r.success).length;
     const deferred = results.filter(r => r.error === 'run deadline reached').length;
-    logger.info(`[RPC Metrics] Run done: ${succeeded} of ${results.length} chains updated, ${deferred} left for the next run`);
-    return { success: true, chains: results.length, succeeded };
+    const backfilled = backfillResults.filter(r => r.success).length;
+    logger.info(`[RPC Metrics] Run done: ${succeeded} of ${results.length} chains updated, ${deferred} left for the next run, ${backfilled} of ${backfills.length} backfilled`);
+    return { success: true, chains: results.length, succeeded, backfilled };
   } finally {
     running = false;
   }
