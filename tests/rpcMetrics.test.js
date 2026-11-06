@@ -191,6 +191,25 @@ describe('rpcMetricsService.updateChain', () => {
     expect(days[TODAY - (BACKFILL_DAYS + 1) * DAY]).toBeUndefined();
   });
 
+  it('stops at the head when asked for live days only, leaving the backfill for later', async () => {
+    // Blocks 0-9 before the window, 10-19 two days ago, 20-24 today.
+    const times = [];
+    for (let n = 0; n < 10; n++) times.push(TODAY - 400 * DAY + n);
+    for (let n = 10; n < 20; n++) times.push(TODAY - 2 * DAY + n);
+    for (let n = 20; n < 25; n++) times.push(TODAY + n);
+    fakeChain(times);
+    stubState(null);
+
+    const result = await updateChain('1', URL, { now: NOW, liveOnly: true });
+
+    expect(result).toMatchObject({ success: true, blocksCounted: 5, caughtUp: true, backfilling: true });
+    const days = written(TxCount);
+    expect(days[TODAY].value).toBe(txOf(20, 24));
+    expect(days[TODAY - DAY].value).toBe(0);
+    expect(days[TODAY - 2 * DAY]).toBeUndefined();
+    expect(savedState().backfill).toMatchObject({ day: TODAY - 2 * DAY, endBlock: 19 });
+  });
+
   it.each(['block', 'tx'])('derives gas used, max TPS, fees and average gas price (%s receipts)', async (receipts) => {
     // Two days ago. Block rates (tx / seconds since parent): block 1 is 1/5,
     // block 2 shares its parent's second so 2/1, block 5 is 2/8.
@@ -571,5 +590,38 @@ describe('rpcMetricsService.updateAllChains', () => {
 
     expect(result).toMatchObject({ success: true, chains: 2, succeeded: 0 });
     expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  it('catches every chain up to its head before any chain backfills', async () => {
+    // Blocks 0-9 before the window, 10-19 two days ago, 20-24 today.
+    const times = [];
+    for (let n = 0; n < 10; n++) times.push(TODAY - 400 * DAY + n);
+    for (let n = 10; n < 20; n++) times.push(TODAY - 2 * DAY + n);
+    for (let n = 20; n < 25; n++) times.push(TODAY + n);
+    fakeChain(times);
+    RpcDayAddresses.find.mockReturnValue({ lean: async () => [] });
+    // States persist between a chain's calls, like the real collection.
+    const states = new Map();
+    RpcTxCountState.findOne.mockImplementation(({ chainId }) => ({ lean: async () => states.get(chainId) || null }));
+    RpcTxCountState.updateOne.mockImplementation(async ({ chainId }, { $set }) => {
+      states.set(chainId, { ...states.get(chainId), ...$set });
+    });
+    // More chains than run at once (3), so a backfill could take a slot a
+    // live update is waiting for.
+    const ids = ['1', '2', '3', '4'];
+    RpcTxCountState.find.mockReturnValue(query(ids.map(chainId => ({ chainId }))));
+    Chain.find.mockReturnValue(query(ids.map(id => ({ evmChainId: Number(id), rpcUrl: URL }))));
+
+    const result = await updateAllChains({ now: NOW, deadline: Date.now() + 60_000 });
+
+    expect(result).toMatchObject({ success: true, chains: 4, succeeded: 4, backfilled: 4 });
+    const calls = RpcTxCountState.findOne.mock.calls.map(([filter]) => filter.chainId);
+    expect(calls.slice(0, 4)).toEqual(ids);
+    expect([...calls.slice(4)].sort()).toEqual(ids);
+    for (const id of ids) {
+      const backfilled = TxCount.bulkWrite.mock.calls.some(([ops]) =>
+        ops.some(op => op.updateOne.filter.chainId === id && op.updateOne.filter.timestamp === TODAY - 2 * DAY));
+      expect(backfilled).toBe(true);
+    }
   });
 });
