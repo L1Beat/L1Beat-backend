@@ -23,13 +23,13 @@ const holders = [
     kind: 'treasury',
     website_url: 'https://avat.com',
     manual: {
-      // 15,312,363 AVAX at 2026-06-30 (Q2 results), less 2,082,371.6 AVAX
-      // sold to Avalanche (BVI), Inc. on 2026-09-23. Not a reported total:
-      // replace with the Q3 figure once it's out.
-      avax_held: 13229991,
+      // Reported holdings at 2026-09-30 from the Q3 2026 results (8-K filed
+      // 2026-11-05): ~13.31M AVAX (~7.93M unlocked, ~5.38M locked; ~91%
+      // staked). Replace with the Q4 figure once it's out.
+      avax_held: 13310000,
       aum_usd: null,
-      as_of: '2026-09-23',
-      source_url: 'https://www.businesswire.com/news/home/20260826221979/en/Avalanche-Treasury-Company-Reports-Second-Quarter-2026-Financial-Results'
+      as_of: '2026-09-30',
+      source_url: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=2092446&type=8-K'
     }
   },
   {
