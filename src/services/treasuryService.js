@@ -1,4 +1,5 @@
 const axios = require('axios');
+const zlib = require('zlib');
 const { holders } = require('../config/treasuries');
 const TreasurySnapshot = require('../models/treasurySnapshot');
 const AvaxMarket = require('../models/avaxMarket');
@@ -14,6 +15,11 @@ const HEADERS = { 'User-Agent': 'l1beat-backend' };
 
 const VANECK_URL = 'https://www.vaneck.com/Main/FundDatasetBlock/Get/?blockId=353069&pageId=353872&ticker=VAVX';
 const BITWISE_URL = 'https://bavaetf.com/';
+// Grayscale's fund page sits behind a bot checkpoint; the daily performance
+// spreadsheet it links to is served straight from S3. The "-33" file holds
+// the recent history only, so it stays small.
+const GRAYSCALE_GAVA_XLSX = 'https://reporting-prod-20231113144948145500000003.s3.amazonaws.com/'
+  + 'product-performance/55163830-f3e3-44e3-a08e-51e76499b731-33.xlsx';
 const COINGECKO_TREASURY_URL = 'https://api.coingecko.com/api/v3/companies/public_treasury/avalanche-2';
 const COINGECKO_COIN_URL = 'https://api.coingecko.com/api/v3/coins/avalanche-2'
   + '?localization=false&tickers=false&community_data=false&developer_data=false&sparkline=false';
@@ -58,6 +64,62 @@ function ratioToPct(value) {
   return parsed === null ? null : parsed * 100;
 }
 
+
+// ---------- Minimal .xlsx reading (a zip of XML files) ----------
+
+// The files in a zip archive, by name. Handles stored and deflated entries,
+// which is all spreadsheet writers use.
+function unzip(buffer) {
+  let eocd = buffer.length - 22;
+  while (eocd >= 0 && buffer.readUInt32LE(eocd) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error('not a zip file');
+  const count = buffer.readUInt16LE(eocd + 10);
+  let p = buffer.readUInt32LE(eocd + 16);
+  const files = {};
+  for (let i = 0; i < count; i++) {
+    if (buffer.readUInt32LE(p) !== 0x02014b50) throw new Error('bad zip directory');
+    const method = buffer.readUInt16LE(p + 10);
+    const size = buffer.readUInt32LE(p + 20);
+    const nameLen = buffer.readUInt16LE(p + 28);
+    const extraLen = buffer.readUInt16LE(p + 30);
+    const commentLen = buffer.readUInt16LE(p + 32);
+    const local = buffer.readUInt32LE(p + 42);
+    const name = buffer.toString('utf8', p + 46, p + 46 + nameLen);
+    const start = local + 30 + buffer.readUInt16LE(local + 26) + buffer.readUInt16LE(local + 28);
+    const data = buffer.subarray(start, start + size);
+    files[name] = method === 8 ? zlib.inflateRawSync(data) : data;
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return files;
+}
+
+function xmlText(s) {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+// Rows of a worksheet (1-based index) as arrays of cell strings.
+function xlsxRows(buffer, sheet) {
+  const files = unzip(buffer);
+  const shared = [...String(files['xl/sharedStrings.xml'] || '').matchAll(/<si>([\s\S]*?)<\/si>/g)]
+    .map(m => xmlText([...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(t => t[1]).join('')));
+  const xml = files[`xl/worksheets/sheet${sheet}.xml`];
+  if (!xml) throw new Error(`no sheet ${sheet}`);
+  return [...String(xml).matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)].map(row =>
+    [...row[1].matchAll(/<c([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)].map(([, attrs, body = '']) => {
+      const v = body.match(/<v>([\s\S]*?)<\/v>/)?.[1];
+      if (/t="s"/.test(attrs)) return v === undefined ? '' : shared[Number(v)] ?? '';
+      if (/t="inlineStr"/.test(attrs)) return xmlText(body.match(/<t[^>]*>([\s\S]*?)<\/t>/)?.[1] ?? '');
+      return v === undefined ? '' : xmlText(v);
+    })
+  );
+}
+
+// Header row + data rows → objects keyed by header.
+function rowsToObjects(rows) {
+  const [header = [], ...data] = rows;
+  return data.map(r => Object.fromEntries(header.map((h, i) => [h, r[i]])));
+}
+
 const fetchers = {
   async vaneck() {
     const data = await get(VANECK_URL);
@@ -90,6 +152,27 @@ const fetchers = {
       staking_max_pct: ratioToPct(staking?.targetPercentageOfAssetsStaked),
       as_of: data?.holdings?.asOfDate || data?.fundDetails?.asOfDate || null,
       source_url: BITWISE_URL
+    };
+  },
+
+  // Sheet 1: one row per day (shares outstanding, NAV, AUM). Sheet 3: AVAX per
+  // share for the latest day. AVAX held = shares outstanding x AVAX per share.
+  async grayscale() {
+    const buffer = Buffer.from(await get(GRAYSCALE_GAVA_XLSX, { responseType: 'arraybuffer' }));
+    const days = rowsToObjects(xlsxRows(buffer, 1)).filter(r => /^\d{4}-\d{2}-\d{2}$/.test(r.Date || ''));
+    const perShare = rowsToObjects(xlsxRows(buffer, 3)).find(r => /avax/i.test(r.Name || ''));
+    if (!perShare) throw new Error('no AVAX per share row');
+    // Use the day the AVAX per share is for, so both figures match.
+    const day = days.find(r => r.Date === perShare.Date);
+    if (!day) throw new Error(`no daily row for ${perShare.Date}`);
+    const shares = parseNumber(day['Shares Outstanding']);
+    const avaxPerShare = parseNumber(perShare['Asset/Share']);
+    return {
+      avax_held: shares !== null && avaxPerShare !== null ? shares * avaxPerShare : null,
+      aum_usd: parseNumber(day.AUM),
+      nav_per_share: parseNumber(day['NAV Per Share']),
+      as_of: perShare.Date,
+      source_url: 'https://etfs.grayscale.com/gava'
     };
   },
 

@@ -69,13 +69,7 @@ const holders = [
     sponsor_fee_pct: 0.35, // After the waiver that ended 2026-06-12
     staking_max_pct: 85,
     website_url: 'https://etfs.grayscale.com/gava',
-    manual: {
-      // Q2 10-Q: 649,890.87 AVAX, $4.27M at fair value.
-      avax_held: 649890.87,
-      aum_usd: 4270000,
-      as_of: '2026-06-30',
-      source_url: 'https://www.sec.gov/Archives/edgar/data/2035053/000203505326000023/ck0002035053-20260630.htm'
-    }
+    live: 'grayscale'
   },
   {
     id: 'bitwise-bava',
