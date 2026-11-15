@@ -40,12 +40,18 @@ const holders = [
     kind: 'treasury',
     website_url: 'https://defi.tech',
     manual: {
-      // The purchase disclosed in Aug 2025. Later quarterly reports give only
-      // the treasury's total value, not its AVAX count.
-      avax_held: 398321,
+      // Our estimate of DEFT's own AVAX at 2026-09-30, from the Q3 2026
+      // interim statements (6-K filed 2026-11-12). Not a reported figure:
+      //   AVAX held directly (note 6)             789,739.5
+      //   less AVAX owed to Valour ETP holders   -715,480  ($7,764,176 in
+      //     note 14, at the note 6 implied price of $10.8517)
+      //   plus AVAX in the Fund A stake (note 7)  386,174.2
+      //   = 460,434, rounded to 460,000 as it's an estimate.
+      // Replace with the Q4 2026 figures (6-K expected Feb-Mar 2027).
+      avax_held: 460000,
       aum_usd: null,
-      as_of: '2025-08-06',
-      source_url: 'https://defillama.com/digital-asset-treasury/deft'
+      as_of: '2026-09-30',
+      source_url: 'https://www.sec.gov/Archives/edgar/data/1888274/000149315226051470/ex99-1.htm'
     }
   },
   {
