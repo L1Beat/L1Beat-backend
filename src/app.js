@@ -31,6 +31,7 @@ const avgGasPriceService = require('./services/avgGasPriceService');
 const feesPaidRoutes = require('./routes/feesPaidRoutes');
 const metricsRoutes = require('./routes/metricsRoutes');
 const treasuryRoutes = require('./routes/treasuryRoutes');
+const publicApiRoutes = require('./routes/publicApiRoutes');
 const feesPaidService = require('./services/feesPaidService');
 const teleporterRoutes = require('./routes/teleporterRoutes');
 const validatorRoutes = require('./routes/validatorRoutes');
@@ -83,6 +84,10 @@ const apiLimiter = rateLimit(config.rateLimit);
 
 // Apply rate limiting to all API routes
 app.use('/api', apiLimiter);
+
+// Public versioned API, open to any origin. Mounted before the site's CORS
+// allowlist below so that never applies to it.
+app.use('/api/v1', publicApiRoutes);
 
 // CORS middleware with environment-aware settings
 const corsOrigins = config.cors.origin;
