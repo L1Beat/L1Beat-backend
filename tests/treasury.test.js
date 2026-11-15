@@ -9,6 +9,7 @@ jest.mock('axios', () => ({ get: jest.fn() }));
 jest.mock('../src/models/treasurySnapshot', () => ({ findOne: jest.fn(), find: jest.fn(), updateOne: jest.fn() }));
 jest.mock('../src/models/avaxMarket', () => ({ findOne: jest.fn(), updateOne: jest.fn() }));
 
+const zlib = require('zlib');
 const axios = require('axios');
 const TreasurySnapshot = require('../src/models/treasurySnapshot');
 const AvaxMarket = require('../src/models/avaxMarket');
@@ -34,7 +35,61 @@ const BITWISE_DATA = {
 };
 const bitwisePage = data => '<html><script id="__NEXT_DATA__" type="application/json">'
   + JSON.stringify({ props: { pageProps: { fundData: { data } } } }) + '</script></html>';
-const COINGECKO_TREASURY = { companies: [{ name: 'AVAX One', total_holdings: 13800000 }] };
+// A minimal .xlsx: a zip (stored, not deflated) of the XML parts the service
+// reads. Sheet 1 uses shared strings and sheet 3 inline strings, as the
+// service handles both.
+function zip(files) {
+  const crc32 = buf => (typeof zlib.crc32 === 'function' ? zlib.crc32(buf) : 0);
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, text] of Object.entries(files)) {
+    const nameBuf = Buffer.from(name);
+    const data = Buffer.from(text);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt32LE(crc32(data), 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt32LE(crc32(data), 16);
+    entry.writeUInt32LE(data.length, 20);
+    entry.writeUInt32LE(data.length, 24);
+    entry.writeUInt16LE(nameBuf.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    locals.push(local, nameBuf, data);
+    central.push(entry, nameBuf);
+    offset += 30 + nameBuf.length + data.length;
+  }
+  const dir = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(Object.keys(files).length, 8);
+  eocd.writeUInt16LE(Object.keys(files).length, 10);
+  eocd.writeUInt32LE(dir.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, dir, eocd]);
+}
+const sheet = rows => `<worksheet><sheetData>${rows.map(r => `<row>${r}</row>`).join('')}</sheetData></worksheet>`;
+const sharedCell = i => `<c t="s"><v>${i}</v></c>`;
+const numCell = n => `<c><v>${n}</v></c>`;
+const inlineCell = s => `<c t="inlineStr"><is><t>${s}</t></is></c>`;
+const GRAYSCALE_STRINGS = ['Date', 'Shares Outstanding', 'NAV Per Share', 'AUM', '2026-11-12', '2026-11-13'];
+const GRAYSCALE_XLSX = zip({
+  'xl/sharedStrings.xml': `<sst>${GRAYSCALE_STRINGS.map(s => `<si><t>${s}</t></si>`).join('')}</sst>`,
+  'xl/worksheets/sheet1.xml': sheet([
+    [0, 1, 2, 3].map(sharedCell).join(''),
+    sharedCell(4) + numCell(345000) + numCell(20.1) + numCell(6934500),
+    sharedCell(5) + numCell(350000) + numCell(20.38) + numCell(7090818.79)
+  ]),
+  'xl/worksheets/sheet3.xml': sheet([
+    ['Name', 'Date', 'Asset/Share'].map(inlineCell).join(''),
+    inlineCell('AVAX') + inlineCell('2026-11-13') + numCell(2.4)
+  ])
+});
+const COINGECKO_TREASURY ={ companies: [{ name: 'AVAX One', total_holdings: 13800000 }] };
 const COINGECKO_COIN = {
   market_data: { current_price: { usd: 8.63 }, circulating_supply: 444064787.28, last_updated: '2026-11-01T19:02:50.000Z' }
 };
@@ -44,6 +99,7 @@ function sources(overrides = {}) {
   const responses = {
     vaneck: VANECK,
     bavaetf: bitwisePage(BITWISE_DATA),
+    'product-performance': GRAYSCALE_XLSX,
     public_treasury: COINGECKO_TREASURY,
     'coins/avalanche-2': COINGECKO_COIN,
     ...overrides
@@ -122,13 +178,25 @@ describe('treasuryService.updateAll + getLatest', () => {
     expect(holder(body, 'bitwise-bava').staking_pct).toBeCloseTo(70.02);
     expect(holder(body, 'avax-one')).toMatchObject({ kind: 'treasury', avax_held: 13800000, as_of: TODAY, source: 'live' });
 
-    const gava = holders.find(h => h.id === 'grayscale-gava');
+    // Shares outstanding x AVAX per share, both for the per-share row's day.
     expect(holder(body, 'grayscale-gava')).toMatchObject({
-      avax_held: gava.manual.avax_held,
-      aum_usd: gava.manual.aum_usd,
-      as_of: gava.manual.as_of,
+      kind: 'etf',
+      sponsor: 'Grayscale',
+      aum_usd: 7090818.79,
+      nav_per_share: 20.38,
+      as_of: '2026-11-13',
+      source: 'live',
+      source_url: 'https://etfs.grayscale.com/gava'
+    });
+    expect(holder(body, 'grayscale-gava').avax_held).toBeCloseTo(840000);
+
+    // Manual holders take their figures from the config.
+    const manual = holders.find(h => h.manual);
+    expect(holder(body, manual.id)).toMatchObject({
+      avax_held: manual.manual.avax_held,
+      as_of: manual.manual.as_of,
       source: 'manual',
-      source_url: gava.manual.source_url
+      source_url: manual.manual.source_url
     });
   });
 
@@ -181,6 +249,7 @@ describe('treasuryService.updateAll + getLatest', () => {
     expect(holder({ holders: rows }, 'vaneck-vavx')).toMatchObject({ avax_held: null, as_of: null });
     // Each failing source is tried 3 times.
     expect(axios.get.mock.calls.filter(([url]) => url.includes('vaneck'))).toHaveLength(3);
+    // Bitwise and Grayscale still count; VanEck has no figure.
     expect(totals.etf_count).toBe(2);
     expect(totals).toMatchObject({ avax_price_usd: null, combined_usd: null, combined_share_of_circulating_percent: null });
   });
