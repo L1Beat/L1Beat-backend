@@ -68,6 +68,43 @@ describe('Treasury Endpoints', () => {
       expect(Object.keys(response.body.totals)).toEqual(TOTAL_FIELDS);
     });
 
+    it('matches its OpenAPI schema, field by field', async () => {
+      const { body } = await get('/api/v1/treasuries');
+      const { body: spec } = await get('/api/v1/openapi.json');
+      const schemas = spec.components.schemas;
+
+      expect(spec.openapi).toMatch(/^3\.0\./);
+      expect(spec.paths['/api/v1/treasuries'].get.responses['200']).toBeDefined();
+      expect(Object.keys(schemas.TreasuryHolder.properties)).toEqual(HOLDER_FIELDS);
+      expect(Object.keys(schemas.TreasuryTotals.properties)).toEqual(TOTAL_FIELDS);
+
+      const check = (value, schema, at) => {
+        if (value === null) {
+          expect({ at, nullable: schema.nullable === true }).toEqual({ at, nullable: true });
+          return;
+        }
+        const type = schema.type === 'integer' ? 'number' : schema.type;
+        expect({ at, type: typeof value }).toEqual({ at, type });
+        if (schema.type === 'integer') expect(Number.isInteger(value)).toBe(true);
+        if (schema.enum) expect(schema.enum).toContain(value);
+      };
+      for (const [i, holder] of body.holders.entries()) {
+        for (const [field, schema] of Object.entries(schemas.TreasuryHolder.properties)) {
+          check(holder[field], schema, `holders[${i}].${field}`);
+        }
+      }
+      for (const [field, schema] of Object.entries(schemas.TreasuryTotals.properties)) {
+        check(body.totals[field], schema, `totals.${field}`);
+      }
+      check(body.updated_at, schemas.Treasuries.properties.updated_at, 'updated_at');
+    });
+
+    it('serves the spec to any origin', async () => {
+      const response = await get('/api/v1/openapi.json').set('Origin', 'https://example.com');
+      expect(response.status).toBe(200);
+      expect(response.headers['access-control-allow-origin']).toBe('*');
+    });
+
     it('is open to any origin, unlike the internal routes', async () => {
       const open = await get('/api/v1/treasuries').set('Origin', 'https://example.com');
       expect(open.headers['access-control-allow-origin']).toBe('*');
